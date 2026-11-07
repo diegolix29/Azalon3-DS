@@ -40,6 +40,33 @@ object DsRom {
         return extension in extensions
     }
 
+    /**
+     * True if [uri] starts with a DS cartridge header, for launches whose URI
+     * carries no file name. Checks the Nintendo logo CRC (0xCF56 at 0x15C), which
+     * retail, DSi and ndstool-built homebrew ROMs all have and 3DS files do not.
+     */
+    fun hasDsHeader(uri: Uri): Boolean = try {
+        val stream = if (uri.scheme == null || uri.scheme == "file") {
+            File(uri.path ?: return false).inputStream()
+        } else {
+            CitraApplication.appContext.contentResolver.openInputStream(uri)
+        }
+        stream?.use { input ->
+            val header = ByteArray(0x160)
+            var read = 0
+            while (read < header.size) {
+                val n = input.read(header, read, header.size - read)
+                if (n <= 0) break
+                read += n
+            }
+            read == header.size &&
+                (header[0x15C].toInt() and 0xFF) == 0x56 &&
+                (header[0x15D].toInt() and 0xFF) == 0xCF
+        } ?: false
+    } catch (e: Exception) {
+        false
+    }
+
     /** A ROM the core can open, plus whatever has to be released afterwards. */
     class Handle(
         /** What to hand to the core. */
@@ -84,6 +111,29 @@ object DsRom {
             Log.error("[DS] could not open $uri: ${e.message}")
             null
         }
+    }
+
+    private var preOpened: Pair<String, Handle>? = null
+
+    /**
+     * Opens [path] now, while the caller still holds the read grant another app
+     * gave it, so [takePreOpened] can hand the open file to the DS frontend.
+     */
+    @Synchronized
+    fun preOpen(path: String, documentUri: String?) {
+        preOpened?.second?.close()
+        preOpened = open(path, documentUri)?.let { path to it }
+        if (preOpened == null) Log.warning("[DS] could not pre-open $path")
+    }
+
+    /** The handle [preOpen] made for [path], if any; the caller owns it from then on. */
+    @Synchronized
+    fun takePreOpened(path: String): Handle? {
+        val pending = preOpened ?: return null
+        preOpened = null
+        if (pending.first == path) return pending.second
+        pending.second.close()
+        return null
     }
 
     /** Reads a ROM's banner without keeping it open. Returns null if it is not a DS ROM. */

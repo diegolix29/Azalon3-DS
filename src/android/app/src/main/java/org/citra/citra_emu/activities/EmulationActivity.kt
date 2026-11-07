@@ -42,6 +42,7 @@ import org.citra.citra_emu.dialogs.NetPlayDialog
 import org.citra.citra_emu.display.ScreenAdjustmentUtil
 import org.citra.citra_emu.display.SecondaryDisplay
 import org.citra.citra_emu.ds.DsEmulationActivity
+import org.citra.citra_emu.ds.DsRom
 import org.citra.citra_emu.features.hotkeys.HotkeyUtility
 import org.citra.citra_emu.features.settings.model.BooleanSetting
 import org.citra.citra_emu.features.settings.model.CitraSettings
@@ -148,13 +149,7 @@ class EmulationActivity : AppCompatActivity() {
         if (game != null && game.isDs) {
             // onStop/onDestroy still run for this activity, and both use it.
             secondaryDisplayManager = SecondaryDisplay(this)
-            startActivity(
-                Intent(this, DsEmulationActivity::class.java).apply {
-                    putExtra(DsEmulationActivity.EXTRA_GAME, game)
-                }
-            )
-            processGame = null
-            finish()
+            handOffToDs(game)
             return
         }
 
@@ -221,6 +216,15 @@ class EmulationActivity : AppCompatActivity() {
 
         processGame = GameHelper.getGameFromIntent(this, intent)
         val game = processGame
+
+        // A frontend can launch a DS game while this activity is still on top
+        // (singleTop), so it arrives here rather than in onCreate.
+        if (game != null && game.isDs) {
+            isEmulationRunning = false
+            handOffToDs(game)
+            return
+        }
+
         loadGameSettings(game)
 
         if (game != null && game.titleId != 0L) {
@@ -238,6 +242,28 @@ class EmulationActivity : AppCompatActivity() {
         )
         isEmulationRunning = true
         instance = this
+    }
+
+    /** Starts [game] on the melonDS frontend and closes this activity. */
+    private fun handOffToDs(game: Game) {
+        // Open the ROM here, while this activity surely holds the launching app's grant.
+        if (intent.data?.scheme == "content") {
+            DsRom.preOpen(game.path, game.description)
+        }
+        startActivity(
+            Intent(this, DsEmulationActivity::class.java).apply {
+                putExtra(DsEmulationActivity.EXTRA_GAME, game)
+                // A ROM opened from another app comes with a read grant on this
+                // activity's intent only; pass it on, since this activity finishes.
+                val launchUri = this@EmulationActivity.intent.data
+                if (launchUri != null && launchUri.scheme == "content") {
+                    data = launchUri
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+        )
+        processGame = null
+        finish()
     }
 
     private fun loadGameSettings(game: Game?) {

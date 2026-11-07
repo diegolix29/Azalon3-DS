@@ -190,7 +190,8 @@ class DsEmulationActivity : AppCompatActivity() {
             return false
         }
 
-        val handle = DsRom.open(target.path, target.description)
+        val handle = DsRom.takePreOpened(target.path)
+            ?: DsRom.open(target.path, target.description)
         if (handle == null) {
             showFatal(getString(R.string.ds_error_open_failed, target.title))
             return false

@@ -285,6 +285,9 @@ object GameHelper {
         } else {
             FileUtil.getFilename(uri)
         }.ifEmpty { corePath.substringAfterLast('/') }
+            .ifEmpty { uri.lastPathSegment ?: "game" }
+            // Game.isDs goes by this name, so a ROM found by its header needs the extension.
+            .let { if (DsRom.isDsFile(it)) it else "$it.nds" }
 
         val info = DsRom.probe(corePath, filePath)
         if (info == null) {
@@ -337,6 +340,16 @@ object GameHelper {
 
         val uri = getLaunchUri(intent) ?: return null
         return try {
+            // DS ROMs are recognised by file name, which an fd:// wrapper loses, and the
+            // DS core opens the document itself later, after the fd below is closed.
+            // Some frontends pass URIs with no file name, so fall back to the header.
+            val launchName = try { FileUtil.getFilename(uri) } catch (e: Exception) { "" }
+            if (DsRom.isDsFile(launchName.ifEmpty { uri.toString() }) ||
+                DsRom.hasDsHeader(uri)
+            ) {
+                return getDsGame(uri, addedToLibrary = false)
+            }
+
             if (BuildUtil.isGooglePlayBuild || uri.toString().startsWith("!")) {
                 getGame(
                     uri,

@@ -183,10 +183,37 @@ ConfigDialog::ConfigDialog(QWidget* parent) : QDialog(parent) {
     jit = new QCheckBox(tr("JIT recompiler (faster)"));
     jit->setChecked(cfg.jit);
     system->addRow(jit);
+    root->addWidget(system_box);
+
+    // Graphics
+    auto* gfx_box = new QGroupBox(tr("Graphics"));
+    auto* gfx = new QFormLayout(gfx_box);
+    auto* renderer = new QComboBox;
+    renderer->addItem(tr("Software (native resolution)"));
+    renderer->setEnabled(false);
+    renderer->setToolTip(tr("The OpenGL / upscaling renderer is not available yet."));
+    gfx->addRow(tr("Renderer:"), renderer);
     threaded = new QCheckBox(tr("Threaded 3D rendering"));
     threaded->setChecked(cfg.threaded_renderer);
-    system->addRow(threaded);
-    root->addWidget(system_box);
+    gfx->addRow(threaded);
+    screen_layout = new QComboBox;
+    screen_layout->addItem(tr("Vertical"), static_cast<int>(ScreenLayout::Vertical));
+    screen_layout->addItem(tr("Side by side"), static_cast<int>(ScreenLayout::Horizontal));
+    screen_layout->addItem(tr("Top screen only"), static_cast<int>(ScreenLayout::TopOnly));
+    screen_layout->addItem(tr("Bottom screen only"), static_cast<int>(ScreenLayout::BottomOnly));
+    screen_layout->setCurrentIndex(
+        std::max(0, screen_layout->findData(static_cast<int>(cfg.layout))));
+    gfx->addRow(tr("Screen layout:"), screen_layout);
+    swap_screens = new QCheckBox(tr("Swap screens"));
+    swap_screens->setChecked(cfg.swap_screens);
+    gfx->addRow(swap_screens);
+    integer_scale = new QCheckBox(tr("Integer scaling (sharp pixels, may leave borders)"));
+    integer_scale->setChecked(cfg.integer_scale);
+    gfx->addRow(integer_scale);
+    smooth = new QCheckBox(tr("Smooth (linear) filtering"));
+    smooth->setChecked(cfg.smooth);
+    gfx->addRow(smooth);
+    root->addWidget(gfx_box);
 
     // BIOS / firmware
     auto* bios_box = new QGroupBox(tr("BIOS and firmware (leave empty to use the built-in ones)"));
@@ -272,6 +299,10 @@ void ConfigDialog::Accept() {
     cfg.direct_boot = direct_boot->isChecked();
     cfg.jit = jit->isChecked();
     cfg.threaded_renderer = threaded->isChecked();
+    cfg.layout = static_cast<ScreenLayout>(screen_layout->currentData().toInt());
+    cfg.swap_screens = swap_screens->isChecked();
+    cfg.integer_scale = integer_scale->isChecked();
+    cfg.smooth = smooth->isChecked();
     cfg.ds_bios9 = ds_bios9->text().trimmed();
     cfg.ds_bios7 = ds_bios7->text().trimmed();
     cfg.ds_firmware = ds_firmware->text().trimmed();

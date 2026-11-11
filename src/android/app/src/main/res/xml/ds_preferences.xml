@@ -36,6 +36,29 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="@string/ds_category_screens">
+
+        <ListPreference
+            android:defaultValue="0"
+            android:entries="@array/ds_layouts"
+            android:entryValues="@array/ds_layout_values"
+            android:key="ds_layout"
+            android:title="@string/ds_menu_layout"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="ds_swap_screens"
+            android:title="@string/ds_menu_swap_screens" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="ds_show_overlay"
+            android:summary="@string/ds_show_overlay_description"
+            android:title="@string/ds_show_overlay" />
+
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="@string/ds_category_firmware">
 
         <EditTextPreference
@@ -138,29 +161,6 @@
             android:key="ds_internet"
             android:summary="@string/ds_internet_description"
             android:title="@string/ds_internet" />
-
-    </PreferenceCategory>
-
-    <PreferenceCategory android:title="@string/ds_category_screens">
-
-        <ListPreference
-            android:defaultValue="0"
-            android:entries="@array/ds_layouts"
-            android:entryValues="@array/ds_layout_values"
-            android:key="ds_layout"
-            android:title="@string/ds_menu_layout"
-            app:useSimpleSummaryProvider="true" />
-
-        <SwitchPreferenceCompat
-            android:defaultValue="false"
-            android:key="ds_swap_screens"
-            android:title="@string/ds_menu_swap_screens" />
-
-        <SwitchPreferenceCompat
-            android:defaultValue="true"
-            android:key="ds_show_overlay"
-            android:summary="@string/ds_show_overlay_description"
-            android:title="@string/ds_show_overlay" />
 
     </PreferenceCategory>
 

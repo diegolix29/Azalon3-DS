@@ -85,6 +85,10 @@ private:
     QCheckBox* direct_boot;
     QCheckBox* jit;
     QCheckBox* threaded;
+    QComboBox* screen_layout;
+    QCheckBox* swap_screens;
+    QCheckBox* integer_scale;
+    QCheckBox* smooth;
     QLineEdit *ds_bios9, *ds_bios7, *ds_firmware;
     QLineEdit *dsi_bios9, *dsi_bios7, *dsi_firmware, *dsi_nand;
     QLineEdit* nickname;

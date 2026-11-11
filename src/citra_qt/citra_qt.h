@@ -445,6 +445,7 @@ private:
     bool BootDSGame(const QString& filename);
     void ShutdownDSGame();
     void InitializeDSMenu();
+    void OpenDSSettings();
     bool IsDSGameRunning() const;
     std::unique_ptr<DS::Session> ds_session;
     DS::ScreenWidget* ds_screen = nullptr;

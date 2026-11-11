@@ -19,8 +19,13 @@ class ScreenWidget : public QWidget {
 public:
     explicit ScreenWidget(Session& session, QWidget* parent = nullptr);
 
+    /// Re-reads the screen settings of Config (layout, swap, scaling, filtering).
+    void ApplyConfig();
+
 signals:
     void MouseActivity();
+    /// "DS Settings..." was picked from the right-click menu.
+    void SettingsRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;

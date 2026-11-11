@@ -211,7 +211,15 @@ void ScreenWidget::contextMenuEvent(QContextMenuEvent* event) {
         Config::Get().Save();
         update();
     });
+    menu.addSeparator();
+    connect(menu.addAction(tr("DS Settings...")), &QAction::triggered, this,
+            &ScreenWidget::SettingsRequested);
     menu.exec(event->globalPos());
+}
+
+void ScreenWidget::ApplyConfig() {
+    UpdateLayout();
+    update();
 }
 
 } // namespace DS

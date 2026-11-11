@@ -7917,6 +7917,13 @@ void GMainWindow::OnLoadState() {
 }
 
 void GMainWindow::OnConfigure() {
+#ifdef ENABLE_DS
+    // While a DS game runs, "Configure" means the DS core's settings.
+    if (IsDSGameRunning()) {
+        OpenDSSettings();
+        return;
+    }
+#endif
     game_list->SetDirectoryWatcherEnabled(false);
     Settings::SetConfiguringGlobal(true);
     ConfigureDialog configureDialog(this, hotkey_registry, system, gl_renderer, physical_devices,
@@ -9250,6 +9257,7 @@ bool GMainWindow::BootDSGame(const QString& filename) {
 
     connect(ds_session.get(), &DS::Session::Stopped, this, [this] { ShutdownDSGame(); });
     connect(ds_screen, &DS::ScreenWidget::MouseActivity, this, &GMainWindow::OnMouseActivity);
+    connect(ds_screen, &DS::ScreenWidget::SettingsRequested, this, &GMainWindow::OpenDSSettings);
 
     if (!ds_status_timer) {
         ds_status_timer = new QTimer(this);
@@ -9404,12 +9412,18 @@ void GMainWindow::InitializeDSMenu() {
 
     menu->addSeparator();
     QAction* settings = menu->addAction(tr("DS Settings..."));
-    connect(settings, &QAction::triggered, this, [this] {
-        DS::ConfigDialog dialog(this);
-        if (dialog.exec() == QDialog::Accepted && IsDSGameRunning())
-            statusBar()->showMessage(tr("Most settings apply the next time a DS game starts."),
-                                     4000);
-    });
+    connect(settings, &QAction::triggered, this, &GMainWindow::OpenDSSettings);
+
+    // Also next to Azahar's own "Configure..." in the Emulation menu.
+    QAction* emu_settings = new QAction(tr("Configure DS / DSi..."), this);
+    connect(emu_settings, &QAction::triggered, this, &GMainWindow::OpenDSSettings);
+    {
+        const QList<QAction*> actions = ui->menu_Emulation->actions();
+        const qsizetype index = actions.indexOf(ui->action_Configure);
+        QAction* before =
+            index >= 0 && index + 1 < actions.size() ? actions[index + 1] : nullptr;
+        ui->menu_Emulation->insertAction(before, emu_settings);
+    }
     QAction* data = menu->addAction(tr("Open DS Data Folder"));
     connect(data, &QAction::triggered, this,
             [] { QDesktopServices::openUrl(QUrl::fromLocalFile(DS::DataDir())); });
@@ -9423,6 +9437,20 @@ void GMainWindow::InitializeDSMenu() {
         load_menu->setEnabled(running);
         internet->setChecked(DS::Config::Get().internet);
     });
+}
+
+void GMainWindow::OpenDSSettings() {
+    DS::ConfigDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (IsDSGameRunning()) {
+        // Screen options apply at once; the core options need a restart of the game.
+        if (ds_screen)
+            ds_screen->ApplyConfig();
+        statusBar()->showMessage(
+            tr("Screen settings applied. Other DS settings apply the next time a DS game starts."),
+            5000);
+    }
 }
 #endif
 

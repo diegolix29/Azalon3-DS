@@ -8,19 +8,47 @@ import android.content.Context
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
+import kotlin.math.ceil
+import kotlin.math.floor
 
 /**
  * One of the two DS screens.
  *
- * The core writes 256x192 frames straight into this view's surface; the window's
- * buffer geometry is set to that size, so the compositor does the scaling and the
- * emulation thread only ever copies 256x192 pixels per screen.
+ * The core writes frames straight into this view's surface and the compositor scales
+ * them to the view. With [smooth] the buffer is 256x192 and the compositor's bilinear
+ * filtering shows; without it the core upscales nearest-neighbour to a whole multiple
+ * close to the view size first, so the pixels stay sharp.
  */
 class DsScreenView(context: Context, private val screen: Int) : SurfaceView(context),
     SurfaceHolder.Callback {
 
+    var smooth: Boolean = true
+        set(value) {
+            field = value
+            updateScale()
+        }
+
+    private var surfaceScale = 0
+
     init {
         holder.addCallback(this)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        updateScale()
+    }
+
+    private fun updateScale() {
+        val scale = if (smooth || width <= 0) {
+            1
+        } else {
+            ceil(width.toDouble() / DsNative.SCREEN_WIDTH).toInt().coerceIn(1, MAX_SCALE)
+        }
+        if (scale != surfaceScale) {
+            surfaceScale = scale
+            DsNative.setSurfaceScale(screen, scale)
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -33,6 +61,11 @@ class DsScreenView(context: Context, private val screen: Int) : SurfaceView(cont
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         DsNative.setSurface(screen, null)
+    }
+
+    companion object {
+        /** Matches kMaxSurfaceScale in jni/ds/ds_session.h. */
+        const val MAX_SCALE = 4
     }
 }
 
@@ -55,6 +88,21 @@ class DsScreensView(context: Context) : ViewGroup(context) {
         set(value) {
             field = value
             requestLayout()
+        }
+
+    /** Sizes the screens to whole multiples of 256x192 when they are at least 1x. */
+    var integerScale: Boolean = false
+        set(value) {
+            field = value
+            requestLayout()
+        }
+
+    /** Bilinear filtering; off keeps the pixels sharp (see [DsScreenView.smooth]). */
+    var smooth: Boolean = true
+        set(value) {
+            field = value
+            topScreen.smooth = value
+            bottomScreen.smooth = value
         }
 
     /**
@@ -105,7 +153,7 @@ class DsScreensView(context: Context) : ViewGroup(context) {
 
         when (layoutMode) {
             DsScreenLayout.VERTICAL -> {
-                val scale = minOf(width.toFloat() / sw, height.toFloat() / (sh * 2))
+                val scale = fit(minOf(width.toFloat() / sw, height.toFloat() / (sh * 2)))
                 val w = (sw * scale).toInt()
                 val h = (sh * scale).toInt()
                 val x = (width - w) / 2
@@ -115,7 +163,7 @@ class DsScreensView(context: Context) : ViewGroup(context) {
             }
 
             DsScreenLayout.HORIZONTAL -> {
-                val scale = minOf(width.toFloat() / (sw * 2), height.toFloat() / sh)
+                val scale = fit(minOf(width.toFloat() / (sw * 2), height.toFloat() / sh))
                 val w = (sw * scale).toInt()
                 val h = (sh * scale).toInt()
                 val x = (width - w * 2) / 2
@@ -128,7 +176,7 @@ class DsScreensView(context: Context) : ViewGroup(context) {
                 val shown =
                     if (layoutMode == DsScreenLayout.TOP_ONLY) topScreen else bottomScreen
                 val hidden = if (shown === topScreen) bottomScreen else topScreen
-                val scale = minOf(width.toFloat() / sw, height.toFloat() / sh)
+                val scale = fit(minOf(width.toFloat() / sw, height.toFloat() / sh))
                 val w = (sw * scale).toInt()
                 val h = (sh * scale).toInt()
                 place(shown, (width - w) / 2, (height - h) / 2, w, h)
@@ -143,6 +191,10 @@ class DsScreensView(context: Context) : ViewGroup(context) {
         /** Share of a portrait window's height the controls get to themselves. */
         const val CONTROLS_BAND = 0.32f
     }
+
+    /** Rounds a screen scale down to a whole number when integer scaling is on. */
+    private fun fit(scale: Float): Float =
+        if (integerScale && scale >= 1f) floor(scale) else scale
 
     private fun place(view: DsScreenView, x: Int, y: Int, w: Int, h: Int) {
         view.measure(

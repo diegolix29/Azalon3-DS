@@ -48,18 +48,47 @@ void OnCoreStop(void*, int reason) {
 
 // azalon_ds hands out 0xAARRGGBB words (B,G,R,A in memory); Android's
 // RGBA/RGBX_8888 windows want R,G,B,A, so red and blue have to be swapped.
+constexpr std::uint32_t ToRGBX(std::uint32_t v) {
+    return 0xFF000000u | ((v & 0x00FF0000u) >> 16) | (v & 0x0000FF00u) |
+           ((v & 0x000000FFu) << 16);
+}
+
+// The buffer is the screen size times a whole factor (see Session::SetSurfaceScale);
+// anything above 1x is a nearest-neighbour upscale, so the compositor's bilinear
+// scaling to the view size barely blurs the pixels.
 void BlitScreen(const std::uint32_t* src, ANativeWindow_Buffer& buffer) {
-    const int width = std::min(buffer.width, AZDS_SCREEN_WIDTH);
-    const int height = std::min(buffer.height, AZDS_SCREEN_HEIGHT);
+    const int scale = std::max(1, std::min(buffer.width / AZDS_SCREEN_WIDTH,
+                                           buffer.height / AZDS_SCREEN_HEIGHT));
     auto* dst = static_cast<std::uint32_t*>(buffer.bits);
 
-    for (int y = 0; y < height; y++) {
+    if (scale == 1) {
+        const int width = std::min(buffer.width, AZDS_SCREEN_WIDTH);
+        const int height = std::min(buffer.height, AZDS_SCREEN_HEIGHT);
+        for (int y = 0; y < height; y++) {
+            const std::uint32_t* in = src + static_cast<std::size_t>(y) * AZDS_SCREEN_WIDTH;
+            std::uint32_t* out = dst + static_cast<std::size_t>(y) * buffer.stride;
+            for (int x = 0; x < width; x++) {
+                out[x] = ToRGBX(in[x]);
+            }
+        }
+        return;
+    }
+
+    const std::size_t row_bytes =
+        static_cast<std::size_t>(AZDS_SCREEN_WIDTH) * scale * sizeof(std::uint32_t);
+    for (int y = 0; y < AZDS_SCREEN_HEIGHT; y++) {
         const std::uint32_t* in = src + static_cast<std::size_t>(y) * AZDS_SCREEN_WIDTH;
-        std::uint32_t* out = dst + static_cast<std::size_t>(y) * buffer.stride;
-        for (int x = 0; x < width; x++) {
-            const std::uint32_t v = in[x];
-            out[x] = 0xFF000000u | ((v & 0x00FF0000u) >> 16) | (v & 0x0000FF00u) |
-                     ((v & 0x000000FFu) << 16);
+        std::uint32_t* first =
+            dst + static_cast<std::size_t>(y) * scale * static_cast<std::size_t>(buffer.stride);
+        std::uint32_t* out = first;
+        for (int x = 0; x < AZDS_SCREEN_WIDTH; x++) {
+            const std::uint32_t v = ToRGBX(in[x]);
+            for (int i = 0; i < scale; i++) {
+                *out++ = v;
+            }
+        }
+        for (int i = 1; i < scale; i++) {
+            std::memcpy(first + static_cast<std::size_t>(i) * buffer.stride, first, row_bytes);
         }
     }
 }
@@ -245,16 +274,34 @@ void Session::SetSurface(Screen screen, ANativeWindow* window) {
         return;
     }
 
-    if (window) {
-        ANativeWindow_setBuffersGeometry(window, AZDS_SCREEN_WIDTH, AZDS_SCREEN_HEIGHT,
-                                         WINDOW_FORMAT_RGBX_8888);
-    }
-
     std::lock_guard guard(surface_lock);
+    if (window) {
+        const int scale = surface_scale[index];
+        ANativeWindow_setBuffersGeometry(window, AZDS_SCREEN_WIDTH * scale,
+                                         AZDS_SCREEN_HEIGHT * scale, WINDOW_FORMAT_RGBX_8888);
+    }
     if (surfaces[index]) {
         ANativeWindow_release(surfaces[index]);
     }
     surfaces[index] = window;
+}
+
+void Session::SetSurfaceScale(Screen screen, int scale) {
+    const auto index = static_cast<int>(screen);
+    if (index < 0 || index >= kNumScreens) {
+        return;
+    }
+    scale = std::clamp(scale, 1, kMaxSurfaceScale);
+
+    std::lock_guard guard(surface_lock);
+    if (surface_scale[index] == scale) {
+        return;
+    }
+    surface_scale[index] = scale;
+    if (surfaces[index]) {
+        ANativeWindow_setBuffersGeometry(surfaces[index], AZDS_SCREEN_WIDTH * scale,
+                                         AZDS_SCREEN_HEIGHT * scale, WINDOW_FORMAT_RGBX_8888);
+    }
 }
 
 void Session::SetTouch(bool pressed, int x, int y) {

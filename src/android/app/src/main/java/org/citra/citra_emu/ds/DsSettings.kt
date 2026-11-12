@@ -49,6 +49,9 @@ class DsSettings {
     // Frontend-only: how the two screens are arranged.
     var layout: DsScreenLayout = DsScreenLayout.VERTICAL
     var swapScreens: Boolean = false
+    var integerScale: Boolean = false
+    /** Bilinear filtering of the screens; off = sharp pixels. */
+    var smooth: Boolean = true
     var showOverlay: Boolean = true
 
     companion object {
@@ -72,6 +75,8 @@ class DsSettings {
         const val KEY_INTERNET = "ds_internet"
         const val KEY_LAYOUT = "ds_layout"
         const val KEY_SWAP_SCREENS = "ds_swap_screens"
+        const val KEY_INTEGER_SCALE = "ds_integer_scale"
+        const val KEY_SMOOTH = "ds_smooth"
         const val KEY_SHOW_OVERLAY = "ds_show_overlay"
 
         /** Reads the current settings. Cheap enough to call when a game starts. */
@@ -100,6 +105,8 @@ class DsSettings {
                 internet = prefs.getBoolean(KEY_INTERNET, defaults.internet)
                 layout = DsScreenLayout.fromInt(prefs.intFrom(KEY_LAYOUT, defaults.layout.value))
                 swapScreens = prefs.getBoolean(KEY_SWAP_SCREENS, defaults.swapScreens)
+                integerScale = prefs.getBoolean(KEY_INTEGER_SCALE, defaults.integerScale)
+                smooth = prefs.getBoolean(KEY_SMOOTH, defaults.smooth)
                 showOverlay = prefs.getBoolean(KEY_SHOW_OVERLAY, defaults.showOverlay)
             }
         }

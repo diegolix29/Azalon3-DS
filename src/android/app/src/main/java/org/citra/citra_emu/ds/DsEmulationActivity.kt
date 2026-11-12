@@ -134,6 +134,8 @@ class DsEmulationActivity : AppCompatActivity() {
         screens = DsScreensView(this).apply {
             layoutMode = settings.layout
             swapped = settings.swapScreens
+            integerScale = settings.integerScale
+            smooth = settings.smooth
             reserveForControls = settings.showOverlay
         }
         overlay = DsInputOverlay(this).apply {
@@ -512,7 +514,18 @@ class DsEmulationActivity : AppCompatActivity() {
         if (started && !pausedByUser) {
             DsNative.setPaused(false)
         }
+        applyScreenSettings()
         updateLanWifi()
+    }
+
+    /** Picks up screen settings changed in DsSettingsActivity while the game ran. */
+    private fun applyScreenSettings() {
+        if (!::screens.isInitialized) return
+        val s = DsSettings.load()
+        screens.layoutMode = s.layout
+        screens.swapped = s.swapScreens
+        screens.integerScale = s.integerScale
+        screens.smooth = s.smooth
     }
 
     /** Wi-Fi power saving makes DS wireless crawl; hold it off while playing over LAN. */

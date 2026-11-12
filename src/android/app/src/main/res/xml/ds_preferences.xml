@@ -28,15 +28,21 @@
             android:summary="@string/ds_jit_description"
             android:title="@string/ds_jit" />
 
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/ds_category_graphics">
+
+        <Preference
+            android:enabled="false"
+            android:key="ds_renderer"
+            android:summary="@string/ds_renderer_software"
+            android:title="@string/ds_renderer" />
+
         <SwitchPreferenceCompat
             android:defaultValue="true"
             android:key="ds_threaded_renderer"
             android:summary="@string/ds_threaded_renderer_description"
             android:title="@string/ds_threaded_renderer" />
-
-    </PreferenceCategory>
-
-    <PreferenceCategory android:title="@string/ds_category_screens">
 
         <ListPreference
             android:defaultValue="0"
@@ -50,6 +56,18 @@
             android:defaultValue="false"
             android:key="ds_swap_screens"
             android:title="@string/ds_menu_swap_screens" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="ds_integer_scale"
+            android:summary="@string/ds_integer_scale_description"
+            android:title="@string/ds_integer_scale" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:key="ds_smooth"
+            android:summary="@string/ds_smooth_description"
+            android:title="@string/ds_smooth" />
 
         <SwitchPreferenceCompat
             android:defaultValue="true"

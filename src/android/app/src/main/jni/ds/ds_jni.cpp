@@ -200,6 +200,12 @@ JNIEXPORT void JNICALL Java_org_citra_citra_1emu_ds_DsNative_setSurface(JNIEnv* 
     DS::Session::Get().SetSurface(static_cast<DS::Screen>(screen), window);
 }
 
+JNIEXPORT void JNICALL Java_org_citra_citra_1emu_ds_DsNative_setSurfaceScale(JNIEnv*, jclass,
+                                                                             jint screen,
+                                                                             jint scale) {
+    DS::Session::Get().SetSurfaceScale(static_cast<DS::Screen>(screen), scale);
+}
+
 JNIEXPORT void JNICALL Java_org_citra_citra_1emu_ds_DsNative_setKeys(JNIEnv*, jclass, jint mask) {
     DS::Session::Get().SetKeys(static_cast<std::uint32_t>(mask));
 }

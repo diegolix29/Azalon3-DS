@@ -178,6 +178,13 @@ object DsNative {
     @JvmStatic
     external fun setSurface(screen: Int, surface: Surface?)
 
+    /**
+     * Size of a screen's buffer in multiples of 256x192 (1 to 4). Above 1 the core
+     * upscales nearest-neighbour, so the compositor's filtering stays sharp.
+     */
+    @JvmStatic
+    external fun setSurfaceScale(screen: Int, scale: Int)
+
     @JvmStatic
     external fun setKeys(mask: Int)
 

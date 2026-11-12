@@ -132,6 +132,13 @@
     <string name="ds_internet_description">Lets games reach replacement Nintendo WFC servers.</string>
 
     <string name="ds_category_screens">Screens</string>
+    <string name="ds_category_graphics">Graphics</string>
+    <string name="ds_renderer">Renderer</string>
+    <string name="ds_renderer_software">Software (native resolution). Upscaling needs the OpenGL renderer, which is not available yet.</string>
+    <string name="ds_integer_scale">Integer scaling</string>
+    <string name="ds_integer_scale_description">Size the screens to whole multiples of 256x192. Sharper, but may leave borders.</string>
+    <string name="ds_smooth">Smooth filtering</string>
+    <string name="ds_smooth_description">Blend pixels when scaling. Off keeps them sharp (uses a little more CPU).</string>
     <string name="ds_show_overlay">On-screen controls</string>
     <string name="ds_show_overlay_description">Hide them if you only play with a controller.</string>
 

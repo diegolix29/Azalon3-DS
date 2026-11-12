@@ -30,6 +30,8 @@ enum class Screen : int {
     Bottom = 1,
 };
 constexpr int kNumScreens = 2;
+/// Largest nearest-neighbour pre-scale of a screen (4x = 1024x768).
+constexpr int kMaxSurfaceScale = 4;
 
 /// Everything the frontend has to decide before a console can be created.
 /// Mirrors the subset of azds_config the Android UI exposes.
@@ -93,6 +95,10 @@ public:
     /// The session releases it when it is replaced or the session is destroyed.
     void SetSurface(Screen screen, ANativeWindow* window);
 
+    /// Size of a screen's buffer in multiples of 256x192 (1 to kMaxSurfaceScale).
+    /// Above 1 the frame is upscaled nearest-neighbour, for sharp pixels.
+    void SetSurfaceScale(Screen screen, int scale);
+
     void SetKeys(std::uint32_t pressed_mask) {
         keys = pressed_mask;
     }
@@ -128,6 +134,7 @@ private:
 
     std::mutex surface_lock;
     ANativeWindow* surfaces[kNumScreens] = {};
+    int surface_scale[kNumScreens] = {1, 1};
 
     std::atomic<std::uint32_t> keys{0};
     std::atomic<bool> touch_pressed{false};

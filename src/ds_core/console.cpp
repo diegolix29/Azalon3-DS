@@ -109,6 +109,16 @@ void SaveFile::Flush(bool force) {
     dirty = false;
 }
 
+void ApplyRenderSettings(azds_console& console) {
+    RendererSettings settings{};
+    settings.ScaleFactor =
+        console.active_renderer == AZDS_RENDERER_SOFTWARE ? 1 : console.scale_factor;
+    settings.Threaded = console.threaded_renderer;
+    settings.HiresCoordinates = console.gl_hires_coordinates;
+    settings.BetterPolygons = console.gl_better_polygons;
+    console.nds->GetRenderer().SetRenderSettings(settings);
+}
+
 } // namespace AzalonDS
 
 namespace {
@@ -329,14 +339,10 @@ std::optional<FATStorageArgs> SDCardArgs(const std::string& image, u64 size, boo
     return args;
 }
 
-void ApplyRendererSettings(azds_console& console) {
+void UseSoftwareRenderer(azds_console& console) {
     console.nds->SetRenderer(std::make_unique<SoftRenderer>(*console.nds));
-    RendererSettings settings{};
-    settings.ScaleFactor = 1;
-    settings.Threaded = console.config.threaded_renderer != 0;
-    settings.HiresCoordinates = false;
-    settings.BetterPolygons = false;
-    console.nds->GetRenderer().SetRenderSettings(settings);
+    console.active_renderer = AZDS_RENDERER_SOFTWARE;
+    AzalonDS::ApplyRenderSettings(console);
 }
 
 void SetDateTime(azds_console& console) {
@@ -382,6 +388,7 @@ AZDS_API void azds_config_init(azds_config* config) {
     config->console_type = AZDS_CONSOLE_DS;
     config->renderer = AZDS_RENDERER_SOFTWARE;
     config->threaded_renderer = 1;
+    config->scale_factor = 1;
     config->jit_enable = 1;
     config->jit_max_block_size = 32;
     config->jit_literal_optimisations = 1;
@@ -522,7 +529,11 @@ AZDS_API azds_console* azds_create(const azds_config* config, char* err, size_t 
         console->nds = std::make_unique<NDS>(std::move(ndsargs), console.get());
     }
 
-    ApplyRendererSettings(*console);
+    console->scale_factor = std::clamp(config->scale_factor, 1, AZDS_MAX_SCALE_FACTOR);
+    console->threaded_renderer = config->threaded_renderer != 0;
+    console->gl_better_polygons = config->gl_better_polygons != 0;
+    console->gl_hires_coordinates = config->gl_hires_coordinates != 0;
+    UseSoftwareRenderer(*console);
     console->nds->Reset();
     SetDateTime(*console);
     return console.release();
@@ -661,6 +672,22 @@ AZDS_API uint32_t azds_run_frame(azds_console* console) {
     if (!console || !console->nds || !console->started)
         return 0;
     MPInterface::Get().Process();
+
+    // OpenGL renderers compile their shaders in steps: spend at most a short slice of
+    // time per call on them so the frontend stays responsive.
+    Renderer& renderer = console->nds->GetRenderer();
+    if (renderer.NeedsShaderCompile()) {
+        const auto start = std::chrono::steady_clock::now();
+        int current = 0, count = 0;
+        do {
+            renderer.ShaderCompileStep(current, count);
+        } while (renderer.NeedsShaderCompile() &&
+                 std::chrono::steady_clock::now() - start < std::chrono::milliseconds(150));
+        LogMessage(AZDS_LOG_DEBUG, "Compiling shader " + std::to_string(current + 1) + "/" +
+                                       std::to_string(count));
+        return 0;
+    }
+
     const u32 lines = console->nds->RunFrame();
     if (console->nds_save)
         console->nds_save->Flush(false);

@@ -61,6 +61,9 @@ void SetGlobalLogCallback(void (*log)(void*, azds_log_level, const char*), void*
 void SetDataDir(const std::string& dir);
 const std::string& GetDataDir();
 
+/// Builds the melonDS render settings from the console's current values (console.cpp).
+void ApplyRenderSettings(azds_console& console);
+
 /// Networking glue (net.cpp).
 void NetRegisterInstance(int instance);
 void NetUnregisterInstance(int instance);
@@ -88,4 +91,14 @@ struct azds_console {
 
     int instance_id = 0;
     bool mic_active = false;
+
+    // Renderer state (gl.cpp). The render settings start from config and can be changed
+    // with azds_set_render_settings().
+    azds_renderer active_renderer = AZDS_RENDERER_SOFTWARE;
+    int scale_factor = 1;
+    bool threaded_renderer = true;
+    bool gl_better_polygons = false;
+    bool gl_hires_coordinates = false;
+    unsigned int gl_read_fbo = 0; ///< GLuint, framebuffer used to read the output back
+    std::vector<melonDS::u32> gl_top, gl_bottom;
 };

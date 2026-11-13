@@ -27,7 +27,7 @@
 extern "C" {
 #endif
 
-#define AZDS_API_VERSION 1
+#define AZDS_API_VERSION 2
 
 #define AZDS_SCREEN_WIDTH 256
 #define AZDS_SCREEN_HEIGHT 192
@@ -41,10 +41,13 @@ typedef enum azds_console_type {
 
 typedef enum azds_renderer {
     AZDS_RENDERER_SOFTWARE = 0,
-    // Reserved, not wired up yet:
+    // Desktop OpenGL 3.2+ core context (see azds_gl_attach). Supports upscaling.
     AZDS_RENDERER_OPENGL = 1,
+    // OpenGL 4.3 compute shader renderer. Supports upscaling.
     AZDS_RENDERER_OPENGL_COMPUTE = 2,
 } azds_renderer;
+
+#define AZDS_MAX_SCALE_FACTOR 16
 
 typedef enum azds_log_level {
     AZDS_LOG_DEBUG = 0,
@@ -91,8 +94,13 @@ typedef struct azds_config {
     uint32_t struct_size; // set by azds_config_init
 
     azds_console_type console_type;
-    azds_renderer renderer;
+    azds_renderer renderer; // unused: the console starts on software, see azds_gl_attach()
     int threaded_renderer; // software renderer: render on a separate thread
+
+    // OpenGL renderers (used once azds_gl_attach() is called; see below).
+    int scale_factor;          // internal resolution, 1 = native 256x192, max AZDS_MAX_SCALE_FACTOR
+    int gl_better_polygons;    // OpenGL: improved polygon splitting
+    int gl_hires_coordinates;  // compute: use high-resolution vertex coordinates
 
     // ARM JIT (x86_64 / arm64 only; ignored elsewhere)
     int jit_enable;
@@ -193,13 +201,54 @@ AZDS_API void azds_reset(azds_console* console);
 AZDS_API void azds_stop(azds_console* console);
 AZDS_API int azds_is_running(const azds_console* console);
 
-// Emulate one video frame. Returns the number of scanlines run.
+// Emulate one video frame. Returns the number of scanlines run, or 0 when the frame was
+// spent compiling OpenGL shaders instead (the previous frame stays on screen).
 AZDS_API uint32_t azds_run_frame(azds_console* console);
 
 // Software renderer output: 256x192 per screen, 32-bit BGRA (little-endian 0xAARRGGBB).
-// Returns 1 if RAM framebuffers are available.
+// Returns 1 if RAM framebuffers are available. Returns 0 while an OpenGL renderer is
+// active: use azds_get_framebuffers_ex() for those.
 AZDS_API int azds_get_framebuffers(azds_console* console, const uint32_t** top,
                                    const uint32_t** bottom);
+
+// Like azds_get_framebuffers(), for every renderer. With an OpenGL renderer the frame is
+// read back from the GPU into RAM buffers of (256*scale)x(192*scale) pixels per screen,
+// same pixel format, top row first; call it on the thread that runs frames, with the GL
+// context current. width/height receive the size of one screen. The buffers stay valid
+// until the next call. Returns 1 on success.
+AZDS_API int azds_get_framebuffers_ex(azds_console* console, const uint32_t** top,
+                                      const uint32_t** bottom, int* width, int* height);
+
+// ----------------------------------------------------------------------------
+// Renderers
+//
+// The console always starts with the software renderer. To use an OpenGL renderer the
+// frontend creates a desktop OpenGL context (3.2+ core; 4.3 for the compute renderer),
+// makes it current on the thread that runs frames and calls azds_gl_attach() there.
+// Every later call into the console that can touch the renderer (azds_run_frame, reset,
+// savestates, azds_set_render_settings, azds_get_framebuffers_ex) must then happen on
+// that thread with the context current, and azds_gl_detach() must be called there before
+// the context is destroyed and before azds_stop()/azds_destroy().
+
+// Resolves an OpenGL function by name (e.g. QOpenGLContext::getProcAddress, eglGetProcAddress).
+typedef void* (*azds_gl_get_proc_address)(void* userdata, const char* name);
+
+// 1 if this build of the library contains the OpenGL renderers.
+AZDS_API int azds_gl_supported(void);
+// Switches to `renderer` (AZDS_RENDERER_OPENGL or AZDS_RENDERER_OPENGL_COMPUTE). Returns 1
+// on success; on failure (old GL version, shader errors...) the software renderer stays
+// active, the reason is logged and written to err.
+AZDS_API int azds_gl_attach(azds_console* console, azds_renderer renderer,
+                            azds_gl_get_proc_address get_proc_address, void* userdata,
+                            char* err, size_t err_len);
+// Goes back to the software renderer and frees every GL object of the console.
+AZDS_API void azds_gl_detach(azds_console* console);
+// Renderer in use right now.
+AZDS_API azds_renderer azds_get_renderer(const azds_console* console);
+// Changes the render settings while running (same meaning as the azds_config fields).
+AZDS_API void azds_set_render_settings(azds_console* console, int threaded_renderer,
+                                       int scale_factor, int gl_better_polygons,
+                                       int gl_hires_coordinates);
 
 // ----------------------------------------------------------------------------
 // Input

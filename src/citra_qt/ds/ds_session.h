@@ -20,6 +20,8 @@
 #include "core/frontend/input.h"
 
 struct azds_console;
+class QOffscreenSurface;
+class QOpenGLContext;
 
 namespace AudioCore {
 class Sink;
@@ -63,7 +65,11 @@ public:
         return title;
     }
 
-    /// Latest frame: both screens stacked (256x384, RGB32). Thread-safe copy.
+    /// Re-reads the video settings of Config (renderer, internal resolution...) and applies
+    /// them to the running game.
+    void ApplyRenderSettings();
+
+    /// Latest frame: both screens stacked (RGB32), (256*scale)x(384*scale). Cheap shared copy.
     QImage CurrentFrame() const;
 
     /// Touch input in DS bottom-screen coordinates (called from the GUI thread).
@@ -77,6 +83,7 @@ public:
 signals:
     void FrameReady();
     void Stopped(); ///< emulated console powered off by itself
+    void Message(const QString& text); ///< something for the status bar (any thread)
 
 private:
     void EmuLoop();
@@ -85,6 +92,10 @@ private:
     void LoadInputDevices();
     uint32_t PollButtons() const;
     QString StatePath(int slot) const;
+    /// Emulation thread: switches the core to `renderer` (azds_renderer), creating or
+    /// destroying the OpenGL context as needed. Falls back to software on failure.
+    void UseRenderer(int renderer);
+    void DestroyGL();
 
     azds_console* console = nullptr;
     std::thread emu_thread;
@@ -102,6 +113,11 @@ private:
 
     mutable std::mutex frame_lock;
     QImage frame;
+
+    // OpenGL renderers: the surface is created on the GUI thread (Qt requires it), the
+    // context lives on the emulation thread and stays current there.
+    std::unique_ptr<QOffscreenSurface> gl_surface;
+    std::unique_ptr<QOpenGLContext> gl_context;
 
     std::atomic<bool> touch_pressed{false};
     std::atomic<int> touch_x{0}, touch_y{0};

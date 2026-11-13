@@ -9238,6 +9238,9 @@ bool GMainWindow::IsDSGameRunning() const {
 
 bool GMainWindow::BootDSGame(const QString& filename) {
     auto session = std::make_unique<DS::Session>();
+    // Before Start(): the emulation thread may report a renderer fallback right away.
+    connect(session.get(), &DS::Session::Message, this,
+            [this](const QString& text) { statusBar()->showMessage(text, 8000); });
     QString error;
     if (!session->Start(filename, &error)) {
         QMessageBox::critical(this, tr("AzalonDS"),
@@ -9444,12 +9447,13 @@ void GMainWindow::OpenDSSettings() {
     if (dialog.exec() != QDialog::Accepted)
         return;
     if (IsDSGameRunning()) {
-        // Screen options apply at once; the core options need a restart of the game.
+        // Screen and video options apply at once; the core options need a restart of the game.
+        ds_session->ApplyRenderSettings();
         if (ds_screen)
             ds_screen->ApplyConfig();
-        statusBar()->showMessage(
-            tr("Screen settings applied. Other DS settings apply the next time a DS game starts."),
-            5000);
+        statusBar()->showMessage(tr("Screen and video settings applied. Other DS settings apply "
+                                    "the next time a DS game starts."),
+                                 5000);
     }
 }
 #endif

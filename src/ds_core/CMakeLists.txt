@@ -54,8 +54,16 @@ set(ENABLE_GDBSTUB OFF CACHE BOOL "" FORCE)
 set(ENABLE_LTO OFF CACHE BOOL "" FORCE)
 set(ENABLE_LTO_RELEASE OFF CACHE BOOL "" FORCE)
 set(ENABLE_JIT_PROFILING OFF CACHE BOOL "" FORCE)
-# TODO: OpenGL renderers (needs a GL loader shared with the frontend's context).
-set(ENABLE_OGLRENDERER OFF CACHE BOOL "" FORCE)
+# melonDS's OpenGL / OpenGL compute renderers (upscaling). They need desktop OpenGL
+# (GLSL 1.40, compute: GL 4.3); the frontend owns the context and passes its
+# GetProcAddress to azds_gl_attach(). Off on Android (GLES only) for now.
+if (ANDROID)
+    set(_azds_gl_default OFF)
+else()
+    set(_azds_gl_default ON)
+endif()
+option(AZDS_ENABLE_OPENGL "Build melonDS's OpenGL renderers into azalon_ds" ${_azds_gl_default})
+set(ENABLE_OGLRENDERER ${AZDS_ENABLE_OPENGL} CACHE BOOL "" FORCE)
 
 if (WIN32 AND NOT MINGW)
     # FATStorage.cpp includes <dirent.h> without using it; MSVC-ABI toolchains lack it.
@@ -97,7 +105,13 @@ add_library(azalon_ds SHARED
     console.cpp
     platform.cpp
     net.cpp
+    gl.cpp
 )
+if (AZDS_ENABLE_OPENGL)
+    # glad lives inside the library (hidden symbols), loaded from the frontend's context.
+    target_sources(azalon_ds PRIVATE "${MELONDS_SOURCE_DIR}/src/frontend/glad/glad.c")
+    target_compile_definitions(azalon_ds PRIVATE AZDS_HAVE_OPENGL)
+endif()
 target_include_directories(azalon_ds
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${MELONDS_SOURCE_DIR}/src")

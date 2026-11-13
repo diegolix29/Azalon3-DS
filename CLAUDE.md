@@ -44,8 +44,15 @@ title/icon, synthetic program id `"NDS"+gamecode`), `citra_qt/CMakeLists.txt`,
   "C++ Clang tools for Windows".
 - Azahar and melonDS bundle different, incompatible teakra and xxhash. Inside the DLL/.so
   everything but `azds_*` is hidden (`-fvisibility=hidden`, `--exclude-libs,ALL` on ELF).
-- melonDS's OpenGL renderer is OFF for now (software renderer, threaded). Enabling it needs a
-  GL loader/context shared with the frontend.
+- melonDS's OpenGL / compute renderers are built in on desktop (`AZDS_ENABLE_OPENGL`, OFF on
+  Android: its shaders are desktop GLSL 1.40; Android needs melonDS-android-lib's GLES deltas).
+  `src/ds_core/gl.cpp`: glad is compiled into the DLL and loaded from the frontend's context
+  (`azds_gl_attach`), the output array texture is read back with `glReadPixels` into RAM
+  buffers (`azds_get_framebuffers_ex`, (256*scale)x(192*scale)), so frontends still blit
+  pixels. The console starts on software; Qt `DS::Session` makes a `QOffscreenSurface` on the
+  GUI thread and a `QOpenGLContext` (4.3 core, 3.2 fallback) on the emu thread, attaches there
+  and detaches before the thread exits (azds_stop/destroy run on the GUI thread).
+  `src/ds_core/cmake/MakeEmbed.cmake` forwards to melonDS's (its shader CMake uses CMAKE_SOURCE_DIR).
 - On MSVC-ABI builds melonDS needs `__WIN32__` defined and a dummy `dirent.h` (src/ds_core/compat).
 
 ## Building (Windows)
@@ -95,7 +102,7 @@ The Android repo is owned by another Windows SID: use `git -c safe.directory=* .
   DS LAN glue: `DsLan` (JNI in `jni/ds/ds_lan_jni.cpp`), in-game join/leave/chat toasts.
 - LAN between desktop and Android: same core and protocol (UDP 7063 discovery, 7064 session).
   Checked host/join/password/chat with two desktop processes; not yet tested phone <-> PC.
-- Not done: OpenGL/upscaled DS rendering, DS hotkeys, DS play-time tracking, AAC (DSi) decoding
+- Not done: Android OpenGL/upscaled DS rendering, screen filters (xBR/HQx/LCD), Vulkan, DS hotkeys, DS play-time tracking, AAC (DSi) decoding
   (faad2), mic/camera passthrough, multi-instance local MP in one process, per-game DS settings, libretro, Linux/macOS packaging of the shared library
   (rpath/bundle), CI (`.github/workflows/build.yml`).
 

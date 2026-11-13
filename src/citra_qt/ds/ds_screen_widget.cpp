@@ -100,10 +100,12 @@ void ScreenWidget::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.fillRect(rect(), Qt::black);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, Config::Get().smooth);
+    // The frame is both screens stacked, at the renderer's internal resolution.
+    const int fw = frame.width(), fh = frame.height() / 2;
     if (!top_rect.isNull())
-        painter.drawImage(top_rect, frame, QRect(0, 0, kW, kH));
+        painter.drawImage(top_rect, frame, QRect(0, 0, fw, fh));
     if (!bottom_rect.isNull())
-        painter.drawImage(bottom_rect, frame, QRect(0, kH, kW, kH));
+        painter.drawImage(bottom_rect, frame, QRect(0, fh, fw, fh));
 }
 
 void ScreenWidget::keyPressEvent(QKeyEvent* event) {

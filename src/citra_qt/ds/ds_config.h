@@ -31,6 +31,12 @@ struct Config {
     bool jit = true;
     bool threaded_renderer = true;
 
+    // Video
+    int renderer = 0;           ///< azds_renderer: 0 software, 1 OpenGL, 2 OpenGL compute
+    int scale_factor = 2;       ///< internal resolution of the OpenGL renderers (1 = native)
+    bool better_polygons = false;  ///< OpenGL: improved polygon splitting
+    bool hires_coordinates = true; ///< compute: high-resolution vertex coordinates
+
     // BIOS / firmware (empty = built-in FreeBIOS and generated firmware)
     QString ds_bios9, ds_bios7, ds_firmware;
     QString dsi_bios9, dsi_bios7, dsi_firmware, dsi_nand;
@@ -85,6 +91,10 @@ private:
     QCheckBox* direct_boot;
     QCheckBox* jit;
     QCheckBox* threaded;
+    QComboBox* renderer;
+    QComboBox* scale_factor;
+    QCheckBox* better_polygons;
+    QCheckBox* hires_coordinates;
     QComboBox* screen_layout;
     QCheckBox* swap_screens;
     QCheckBox* integer_scale;

@@ -5,10 +5,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <utility>
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QOffscreenSurface>
+#include <QOpenGLContext>
+#include <QSurfaceFormat>
 
 #include <azalon_ds/azalon_ds.h>
 
@@ -49,6 +53,19 @@ void OnCoreStop(void* userdata, int reason) {
     auto* session = static_cast<Session*>(userdata);
     LOG_INFO(Frontend, "[DS] console stopped by itself (reason {})", reason);
     QMetaObject::invokeMethod(session, "Stopped", Qt::QueuedConnection);
+}
+
+QSurfaceFormat GLFormat(int major, int minor) {
+    QSurfaceFormat format;
+    format.setRenderableType(QSurfaceFormat::OpenGL);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setVersion(major, minor);
+    format.setSwapInterval(0);
+    return format;
+}
+
+void* GetGLProcAddress(void* userdata, const char* name) {
+    return reinterpret_cast<void*>(static_cast<QOpenGLContext*>(userdata)->getProcAddress(name));
 }
 
 QByteArray Utf8(const QString& s) {
@@ -122,6 +139,9 @@ bool Session::Start(const QString& path, QString* error) {
     config.console_type = cfg.console_type == 1 ? AZDS_CONSOLE_DSI : AZDS_CONSOLE_DS;
     config.renderer = AZDS_RENDERER_SOFTWARE;
     config.threaded_renderer = cfg.threaded_renderer;
+    config.scale_factor = cfg.scale_factor;
+    config.gl_better_polygons = cfg.better_polygons;
+    config.gl_hires_coordinates = cfg.hires_coordinates;
     config.jit_enable = cfg.jit;
     config.direct_boot = cfg.direct_boot;
     config.audio_sample_rate = sink ? sink->GetNativeSampleRate() : 48000.0;
@@ -177,9 +197,23 @@ bool Session::Start(const QString& path, QString* error) {
 
     LoadInputDevices();
 
+    // The OpenGL renderers draw into an offscreen context owned by the emulation thread.
+    // Its surface has to be created here, on the GUI thread. Created even when the
+    // software renderer is selected, so the renderer can be switched while playing.
+    if (azds_gl_supported()) {
+        gl_surface = std::make_unique<QOffscreenSurface>();
+        gl_surface->setFormat(GLFormat(4, 3));
+        gl_surface->create();
+    }
+
     paused = false;
     running = true;
-    emu_thread = std::thread([this] { EmuLoop(); });
+    emu_thread = std::thread([this, renderer = cfg.renderer] {
+        if (renderer != AZDS_RENDERER_SOFTWARE)
+            UseRenderer(renderer);
+        EmuLoop();
+        DestroyGL(); // back to software: azds_stop/destroy run on the GUI thread
+    });
     LOG_INFO(Frontend, "[DS] started {} ({})", rom_path.toStdString(), title.toStdString());
     return true;
 }
@@ -196,6 +230,7 @@ void Session::Stop() {
         commands.clear();
     }
     CloseAudio();
+    gl_surface.reset();
     if (console) {
         azds_stop(console);
         azds_destroy(console); // flushes saves
@@ -256,8 +291,75 @@ bool Session::RunOnEmuThread(std::function<bool()> task) {
 }
 
 QImage Session::CurrentFrame() const {
+    // The emulation thread never writes into a published image (it swaps in a new one),
+    // so a shallow copy is safe.
     std::lock_guard guard(frame_lock);
-    return frame.copy();
+    return frame;
+}
+
+void Session::ApplyRenderSettings() {
+    if (!running || !console)
+        return;
+    const Config& cfg = Config::Get();
+    const int renderer = gl_surface ? cfg.renderer : AZDS_RENDERER_SOFTWARE;
+    const int threaded = cfg.threaded_renderer ? 1 : 0;
+    const int scale = cfg.scale_factor;
+    const int better_polygons = cfg.better_polygons ? 1 : 0;
+    const int hires = cfg.hires_coordinates ? 1 : 0;
+    RunOnEmuThread([=, this] {
+        azds_set_render_settings(console, threaded, scale, better_polygons, hires);
+        UseRenderer(renderer);
+        return true;
+    });
+}
+
+void Session::UseRenderer(int renderer) {
+    if (renderer == AZDS_RENDERER_SOFTWARE) {
+        DestroyGL();
+        return;
+    }
+    if (azds_get_renderer(console) == renderer)
+        return;
+
+    if (!gl_context) {
+        if (!gl_surface || !gl_surface->isValid()) {
+            LOG_ERROR(Frontend, "[DS] no OpenGL surface, using the software renderer");
+            emit Message(tr("DS: OpenGL is not available, using the software renderer."));
+            return;
+        }
+        // 4.3 core for the compute renderer; 3.2 core is enough for the regular one.
+        for (const auto& [major, minor] : {std::pair{4, 3}, std::pair{3, 2}}) {
+            auto context = std::make_unique<QOpenGLContext>();
+            context->setFormat(GLFormat(major, minor));
+            if (context->create() && context->makeCurrent(gl_surface.get())) {
+                gl_context = std::move(context);
+                break;
+            }
+        }
+        if (!gl_context) {
+            LOG_ERROR(Frontend, "[DS] could not create an OpenGL context");
+            emit Message(tr("DS: could not create an OpenGL context, using the software "
+                            "renderer."));
+            return;
+        }
+    }
+
+    char err[512] = {};
+    if (!azds_gl_attach(console, static_cast<azds_renderer>(renderer), GetGLProcAddress,
+                        gl_context.get(), err, sizeof(err))) {
+        LOG_ERROR(Frontend, "[DS] {}", err);
+        emit Message(tr("DS: %1").arg(QString::fromUtf8(err)));
+        DestroyGL();
+    }
+}
+
+void Session::DestroyGL() {
+    if (console)
+        azds_gl_detach(console); // frees the GL renderer while its context is current
+    if (gl_context) {
+        gl_context->doneCurrent();
+        gl_context.reset();
+    }
 }
 
 void Session::SetTouch(bool pressed, int x, int y) {
@@ -336,16 +438,27 @@ void Session::EmuLoop() {
             was_touching = false;
         }
 
-        azds_run_frame(console);
+        const uint32_t lines = azds_run_frame(console); // 0: compiling OpenGL shaders
 
         const uint32_t *top = nullptr, *bottom = nullptr;
-        if (azds_get_framebuffers(console, &top, &bottom)) {
-            std::lock_guard guard(frame_lock);
-            constexpr size_t kScreenBytes = AZDS_SCREEN_WIDTH * AZDS_SCREEN_HEIGHT * 4;
-            std::memcpy(frame.bits(), top, kScreenBytes);
-            std::memcpy(frame.bits() + kScreenBytes, bottom, kScreenBytes);
+        int width = 0, height = 0;
+        if (lines && azds_get_framebuffers_ex(console, &top, &bottom, &width, &height)) {
+            // Both screens stacked. Alpha is forced opaque (RGB32 expects 0xFF; the GL
+            // renderers leave other values there).
+            QImage next(width, height * 2, QImage::Format_RGB32);
+            const size_t pixels = static_cast<size_t>(width) * height;
+            auto* out = reinterpret_cast<uint32_t*>(next.bits());
+            for (size_t i = 0; i < pixels; i++)
+                out[i] = top[i] | 0xFF000000u;
+            out += pixels;
+            for (size_t i = 0; i < pixels; i++)
+                out[i] = bottom[i] | 0xFF000000u;
+            {
+                std::lock_guard guard(frame_lock);
+                frame = std::move(next);
+            }
+            emit FrameReady();
         }
-        emit FrameReady();
 
         fps_frames++;
         const auto now = clock::now();

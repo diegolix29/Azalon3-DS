@@ -20,6 +20,8 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <azalon_ds/azalon_ds.h>
+
 #include "citra_qt/ds/ds_config.h"
 #include "common/file_util.h"
 
@@ -50,6 +52,14 @@ void Config::Load() {
     direct_boot = s.value(QStringLiteral("direct_boot"), direct_boot).toBool();
     jit = s.value(QStringLiteral("jit"), jit).toBool();
     threaded_renderer = s.value(QStringLiteral("threaded_renderer"), threaded_renderer).toBool();
+    s.endGroup();
+
+    s.beginGroup(QStringLiteral("Video"));
+    renderer = std::clamp(s.value(QStringLiteral("renderer"), renderer).toInt(), 0, 2);
+    scale_factor = std::clamp(s.value(QStringLiteral("scale_factor"), scale_factor).toInt(), 1,
+                              AZDS_MAX_SCALE_FACTOR);
+    better_polygons = s.value(QStringLiteral("better_polygons"), better_polygons).toBool();
+    hires_coordinates = s.value(QStringLiteral("hires_coordinates"), hires_coordinates).toBool();
     s.endGroup();
 
     s.beginGroup(QStringLiteral("BIOS"));
@@ -96,6 +106,13 @@ void Config::Save() const {
     s.setValue(QStringLiteral("direct_boot"), direct_boot);
     s.setValue(QStringLiteral("jit"), jit);
     s.setValue(QStringLiteral("threaded_renderer"), threaded_renderer);
+    s.endGroup();
+
+    s.beginGroup(QStringLiteral("Video"));
+    s.setValue(QStringLiteral("renderer"), renderer);
+    s.setValue(QStringLiteral("scale_factor"), scale_factor);
+    s.setValue(QStringLiteral("better_polygons"), better_polygons);
+    s.setValue(QStringLiteral("hires_coordinates"), hires_coordinates);
     s.endGroup();
 
     s.beginGroup(QStringLiteral("BIOS"));
@@ -188,14 +205,46 @@ ConfigDialog::ConfigDialog(QWidget* parent) : QDialog(parent) {
     // Graphics
     auto* gfx_box = new QGroupBox(tr("Graphics"));
     auto* gfx = new QFormLayout(gfx_box);
-    auto* renderer = new QComboBox;
-    renderer->addItem(tr("Software (native resolution)"));
-    renderer->setEnabled(false);
-    renderer->setToolTip(tr("The OpenGL / upscaling renderer is not available yet."));
+    renderer = new QComboBox;
+    renderer->addItem(tr("Software (native resolution, most accurate)"), AZDS_RENDERER_SOFTWARE);
+    renderer->addItem(tr("OpenGL (upscaling)"), AZDS_RENDERER_OPENGL);
+    renderer->addItem(tr("OpenGL compute shaders (upscaling, needs OpenGL 4.3)"),
+                      AZDS_RENDERER_OPENGL_COMPUTE);
+    if (!azds_gl_supported()) {
+        renderer->setEnabled(false);
+        renderer->setToolTip(tr("This build of the DS core has no OpenGL renderer."));
+    }
+    renderer->setCurrentIndex(
+        azds_gl_supported() ? std::max(0, renderer->findData(cfg.renderer)) : 0);
     gfx->addRow(tr("Renderer:"), renderer);
-    threaded = new QCheckBox(tr("Threaded 3D rendering"));
+    scale_factor = new QComboBox;
+    for (int scale = 1; scale <= 8; scale++) {
+        const QString size = QStringLiteral("%1x%2").arg(AZDS_SCREEN_WIDTH * scale)
+                                 .arg(AZDS_SCREEN_HEIGHT * scale);
+        scale_factor->addItem(scale == 1 ? tr("Native (%1)").arg(size)
+                                         : tr("%1x (%2)").arg(scale).arg(size),
+                              scale);
+    }
+    scale_factor->setCurrentIndex(std::max(0, scale_factor->findData(cfg.scale_factor)));
+    gfx->addRow(tr("Internal resolution:"), scale_factor);
+    better_polygons = new QCheckBox(tr("Improved polygon splitting (OpenGL)"));
+    better_polygons->setChecked(cfg.better_polygons);
+    gfx->addRow(better_polygons);
+    hires_coordinates = new QCheckBox(tr("High-resolution coordinates (compute shaders)"));
+    hires_coordinates->setChecked(cfg.hires_coordinates);
+    gfx->addRow(hires_coordinates);
+    threaded = new QCheckBox(tr("Threaded 3D rendering (software)"));
     threaded->setChecked(cfg.threaded_renderer);
     gfx->addRow(threaded);
+    const auto update_renderer_rows = [this] {
+        const int current = renderer->currentData().toInt();
+        scale_factor->setEnabled(current != AZDS_RENDERER_SOFTWARE);
+        better_polygons->setEnabled(current == AZDS_RENDERER_OPENGL);
+        hires_coordinates->setEnabled(current == AZDS_RENDERER_OPENGL_COMPUTE);
+        threaded->setEnabled(current == AZDS_RENDERER_SOFTWARE);
+    };
+    connect(renderer, &QComboBox::currentIndexChanged, this, update_renderer_rows);
+    update_renderer_rows();
     screen_layout = new QComboBox;
     screen_layout->addItem(tr("Vertical"), static_cast<int>(ScreenLayout::Vertical));
     screen_layout->addItem(tr("Side by side"), static_cast<int>(ScreenLayout::Horizontal));
@@ -299,6 +348,10 @@ void ConfigDialog::Accept() {
     cfg.direct_boot = direct_boot->isChecked();
     cfg.jit = jit->isChecked();
     cfg.threaded_renderer = threaded->isChecked();
+    cfg.renderer = renderer->currentData().toInt();
+    cfg.scale_factor = scale_factor->currentData().toInt();
+    cfg.better_polygons = better_polygons->isChecked();
+    cfg.hires_coordinates = hires_coordinates->isChecked();
     cfg.layout = static_cast<ScreenLayout>(screen_layout->currentData().toInt());
     cfg.swap_screens = swap_screens->isChecked();
     cfg.integer_scale = integer_scale->isChecked();

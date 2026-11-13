@@ -8,6 +8,8 @@
 #include <string>
 
 #include <dlfcn.h>
+// eglext.h needs egl.h's types first.
+#include <EGL/egl.h>
 #include <EGL/eglext.h>
 
 #include <azalon_ds/azalon_ds.h>

@@ -72,7 +72,7 @@
     <string name="ds_jit">Recompiler</string>
     <string name="ds_jit_description">Much faster than the interpreter. Turn off only to diagnose a problem.</string>
     <string name="ds_threaded_renderer">Threaded renderer</string>
-    <string name="ds_threaded_renderer_description">Render the 3D on its own thread.</string>
+    <string name="ds_threaded_renderer_description">Software renderer: render the 3D on its own thread.</string>
 
     <string name="ds_category_firmware">Firmware</string>
     <string name="ds_nickname">Nickname</string>
@@ -134,7 +134,38 @@
     <string name="ds_category_screens">Screens</string>
     <string name="ds_category_graphics">Graphics</string>
     <string name="ds_renderer">Renderer</string>
-    <string name="ds_renderer_software">Software (native resolution). Upscaling needs the OpenGL renderer, which is not available yet.</string>
+    <string name="ds_renderer_software">Software (native resolution, most accurate)</string>
+    <string name="ds_renderer_opengl">OpenGL ES (upscaling, needs OpenGL ES 3.2)</string>
+    <string name="ds_scale_factor">Internal resolution</string>
+    <string name="ds_scale_native">Native (256x192)</string>
+    <string name="ds_scale_2x">2x (512x384)</string>
+    <string name="ds_scale_3x">3x (768x576)</string>
+    <string name="ds_scale_4x">4x (1024x768)</string>
+    <string name="ds_scale_5x">5x (1280x960)</string>
+    <string name="ds_better_polygons">Improved polygon splitting</string>
+    <string name="ds_better_polygons_description">OpenGL renderer: fewer seams on some 3D models. Slightly slower.</string>
+    <string-array name="ds_renderers">
+        <item>@string/ds_renderer_software</item>
+        <item>@string/ds_renderer_opengl</item>
+    </string-array>
+    <string-array name="ds_renderer_values">
+        <item>0</item>
+        <item>1</item>
+    </string-array>
+    <string-array name="ds_scale_factors">
+        <item>@string/ds_scale_native</item>
+        <item>@string/ds_scale_2x</item>
+        <item>@string/ds_scale_3x</item>
+        <item>@string/ds_scale_4x</item>
+        <item>@string/ds_scale_5x</item>
+    </string-array>
+    <string-array name="ds_scale_factor_values">
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+        <item>4</item>
+        <item>5</item>
+    </string-array>
     <string name="ds_integer_scale">Integer scaling</string>
     <string name="ds_integer_scale_description">Size the screens to whole multiples of 256x192. Sharper, but may leave borders.</string>
     <string name="ds_smooth">Smooth filtering</string>

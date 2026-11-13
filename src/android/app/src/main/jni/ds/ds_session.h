@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 
+#include <EGL/egl.h>
 #include <android/native_window.h>
 
 struct azds_console;
@@ -30,7 +31,7 @@ enum class Screen : int {
     Bottom = 1,
 };
 constexpr int kNumScreens = 2;
-/// Largest nearest-neighbour pre-scale of a screen (4x = 1024x768).
+/// Largest nearest-neighbour pre-scale of a screen (4x = 1024x768) requested by the view.
 constexpr int kMaxSurfaceScale = 4;
 
 /// Everything the frontend has to decide before a console can be created.
@@ -44,6 +45,9 @@ struct StartParams {
     bool direct_boot = true;
     bool jit = true;
     bool threaded_renderer = true;
+    int renderer = 0;     ///< azds_renderer: 0 software, 1 OpenGL ES (upscaling)
+    int scale_factor = 2; ///< internal resolution of the OpenGL renderer
+    bool better_polygons = false;
 
     std::string nickname;
     int language = 1;
@@ -115,6 +119,13 @@ private:
 
     void EmuLoop();
     void PresentFrame();
+    /// Emulation thread: switches to `renderer`, creating the EGL context on first use.
+    /// Falls back to software (and tells the user) if OpenGL ES can't be used.
+    void UseRenderer(int renderer);
+    bool CreateGL(std::string* error);
+    void DestroyGL();
+    /// surface_lock held: sizes a screen's buffer for the current output.
+    void ApplyGeometry(int index);
     void OpenAudio();
     void CloseAudio();
 
@@ -135,6 +146,15 @@ private:
     std::mutex surface_lock;
     ANativeWindow* surfaces[kNumScreens] = {};
     int surface_scale[kNumScreens] = {1, 1};
+    int surface_size[kNumScreens][2] = {}; ///< buffer geometry last set on each surface
+    /// Size of one screen of the core's output (256x192 times the internal resolution).
+    int output_width = 256, output_height = 192;
+
+    // OpenGL ES renderer: a pbuffer context that lives on (and stays current on) the
+    // emulation thread.
+    EGLDisplay egl_display = EGL_NO_DISPLAY;
+    EGLSurface egl_surface = EGL_NO_SURFACE;
+    EGLContext egl_context = EGL_NO_CONTEXT;
 
     std::atomic<std::uint32_t> keys{0};
     std::atomic<bool> touch_pressed{false};
@@ -146,5 +166,7 @@ private:
 /// Notifies the Java side that the console stopped by itself. Set up from
 /// ds_jni.cpp, which owns the cached class and method ids.
 void NotifyStopped();
+/// Shows a short message (toast) on the Java side. Any thread.
+void NotifyMessage(const std::string& text);
 
 } // namespace DS

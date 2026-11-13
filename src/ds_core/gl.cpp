@@ -7,6 +7,7 @@
 // RAM so every frontend keeps drawing plain pixel buffers, only bigger.
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -32,7 +33,7 @@ int ScreenScale(const azds_console& console) {
 
 #ifdef AZDS_HAVE_OPENGL
 
-// glad's loader callback has no user pointer. Only used during azds_gl_attach().
+// glad's loader callback has no user pointer. Only set during azds_gl_attach().
 azds_gl_get_proc_address g_get_proc = nullptr;
 void* g_get_proc_userdata = nullptr;
 
@@ -116,12 +117,18 @@ AZDS_API int azds_gl_attach(azds_console* console, azds_renderer renderer,
     if (console->active_renderer != AZDS_RENDERER_SOFTWARE)
         azds_gl_detach(console);
 
-    g_get_proc = get_proc_address;
-    g_get_proc_userdata = userdata;
-    const int loaded = gladLoadGLLoader(LoadGLProc);
-    g_get_proc = nullptr;
-    g_get_proc_userdata = nullptr;
-    if (!loaded || !glGetString) {
+    struct LoaderScope {
+        LoaderScope(azds_gl_get_proc_address proc, void* data) {
+            g_get_proc = proc;
+            g_get_proc_userdata = data;
+        }
+        ~LoaderScope() {
+            g_get_proc = nullptr;
+            g_get_proc_userdata = nullptr;
+        }
+    } loader_scope(get_proc_address, userdata);
+
+    if (!gladLoadGLLoader(LoadGLProc) || !glGetString) {
         SetError(err, err_len, "Could not load the OpenGL functions (is a context current?)");
         return 0;
     }
@@ -130,15 +137,35 @@ AZDS_API int azds_gl_attach(azds_console* console, azds_renderer renderer,
     const auto* gpu = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     LogMessage(AZDS_LOG_INFO, std::string("OpenGL ") + (version ? version : "?") + " on " +
                                   (gpu ? gpu : "?"));
+    const bool gles = version && std::strncmp(version, "OpenGL ES", 9) == 0;
 
     const bool compute = renderer == AZDS_RENDERER_OPENGL_COMPUTE;
-    if (!GLAD_GL_VERSION_3_2) {
-        SetError(err, err_len, "The DS OpenGL renderer needs OpenGL 3.2 or newer.");
-        return 0;
-    }
-    if (compute && !GLAD_GL_VERSION_4_3) {
-        SetError(err, err_len, "The DS compute shader renderer needs OpenGL 4.3 or newer.");
-        return 0;
+    if (gles) {
+        // glad reports an ES context's version as GLAD_GL_VERSION_<major>_<minor>.
+        if (!GLAD_GL_VERSION_3_2) {
+            SetError(err, err_len, "The DS OpenGL renderer needs OpenGL ES 3.2 or newer.");
+            return 0;
+        }
+        if (compute) {
+            SetError(err, err_len,
+                     "The DS compute shader renderer needs desktop OpenGL 4.3; use the "
+                     "OpenGL renderer on OpenGL ES.");
+            return 0;
+        }
+        std::string why;
+        if (!AzalonDS::InstallGLESCompat(LoadGLProc, &why)) {
+            SetError(err, err_len, why);
+            return 0;
+        }
+    } else {
+        if (!GLAD_GL_VERSION_3_2) {
+            SetError(err, err_len, "The DS OpenGL renderer needs OpenGL 3.2 or newer.");
+            return 0;
+        }
+        if (compute && !GLAD_GL_VERSION_4_3) {
+            SetError(err, err_len, "The DS compute shader renderer needs OpenGL 4.3 or newer.");
+            return 0;
+        }
     }
 
     // GPU::SetRenderer falls back to the software renderer by itself if Init() fails.

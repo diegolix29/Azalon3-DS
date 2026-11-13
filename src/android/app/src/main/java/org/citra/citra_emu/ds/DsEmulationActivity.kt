@@ -107,6 +107,9 @@ class DsEmulationActivity : AppCompatActivity() {
         )
 
         DsNative.onStopped = { runOnUiThread { onConsoleStopped() } }
+        DsNative.onMessage = { text ->
+            runOnUiThread { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
+        }
 
         if (!startEmulation()) {
             finish()
@@ -549,6 +552,7 @@ class DsEmulationActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         DsNative.onStopped = null
+        DsNative.onMessage = null
         lanHandler.removeCallbacks(lanTask)
         if (started) {
             DsLan.setCurrentGame(title?.toString().orEmpty(), false)

@@ -32,11 +32,27 @@
 
     <PreferenceCategory android:title="@string/ds_category_graphics">
 
-        <Preference
-            android:enabled="false"
+        <ListPreference
+            android:defaultValue="0"
+            android:entries="@array/ds_renderers"
+            android:entryValues="@array/ds_renderer_values"
             android:key="ds_renderer"
-            android:summary="@string/ds_renderer_software"
-            android:title="@string/ds_renderer" />
+            android:title="@string/ds_renderer"
+            app:useSimpleSummaryProvider="true" />
+
+        <ListPreference
+            android:defaultValue="2"
+            android:entries="@array/ds_scale_factors"
+            android:entryValues="@array/ds_scale_factor_values"
+            android:key="ds_scale_factor"
+            android:title="@string/ds_scale_factor"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="ds_better_polygons"
+            android:summary="@string/ds_better_polygons_description"
+            android:title="@string/ds_better_polygons" />
 
         <SwitchPreferenceCompat
             android:defaultValue="true"

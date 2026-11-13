@@ -63,8 +63,9 @@ if (ENABLE_DS)
         ds/ds_session.cpp
         ds/ds_session.h
     )
-    # azalon_ds brings in its include dir and the ENABLE_DS define.
-    target_link_libraries(citra-android PRIVATE azalon_ds)
+    # azalon_ds brings in its include dir and the ENABLE_DS define. EGL + dl: the DS
+    # OpenGL ES renderer's context and GL loader (ds_session.cpp).
+    target_link_libraries(citra-android PRIVATE azalon_ds EGL ${CMAKE_DL_LIBS})
 endif()
 
 set(CPACK_PACKAGE_EXECUTABLES ${CPACK_PACKAGE_EXECUTABLES} citra-android)

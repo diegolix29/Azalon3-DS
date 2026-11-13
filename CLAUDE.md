@@ -44,14 +44,26 @@ title/icon, synthetic program id `"NDS"+gamecode`), `citra_qt/CMakeLists.txt`,
   "C++ Clang tools for Windows".
 - Azahar and melonDS bundle different, incompatible teakra and xxhash. Inside the DLL/.so
   everything but `azds_*` is hidden (`-fvisibility=hidden`, `--exclude-libs,ALL` on ELF).
-- melonDS's OpenGL / compute renderers are built in on desktop (`AZDS_ENABLE_OPENGL`, OFF on
-  Android: its shaders are desktop GLSL 1.40; Android needs melonDS-android-lib's GLES deltas).
-  `src/ds_core/gl.cpp`: glad is compiled into the DLL and loaded from the frontend's context
+- melonDS's OpenGL / compute renderers are built into azalon_ds everywhere (`AZDS_ENABLE_OPENGL`).
+  `src/ds_core/gl.cpp`: glad is compiled into the library and loaded from the frontend's context
   (`azds_gl_attach`), the output array texture is read back with `glReadPixels` into RAM
   buffers (`azds_get_framebuffers_ex`, (256*scale)x(192*scale)), so frontends still blit
-  pixels. The console starts on software; Qt `DS::Session` makes a `QOffscreenSurface` on the
-  GUI thread and a `QOpenGLContext` (4.3 core, 3.2 fallback) on the emu thread, attaches there
-  and detaches before the thread exits (azds_stop/destroy run on the GUI thread).
+  pixels. The console starts on software. Desktop Qt `DS::Session`: `QOffscreenSurface` on the
+  GUI thread + `QOpenGLContext` (4.3 core, 3.2 fallback) on the emu thread. Android
+  `jni/ds/ds_session.cpp`: EGL pbuffer + ES 3.2 context on the emu thread, loader = dlsym
+  libGLESv3 then eglGetProcAddress. Both attach on the emu thread and detach before it exits
+  (azds_stop/destroy run on the UI thread).
+- OpenGL ES (Android, needs ES 3.2; compute renderer is desktop-only): `src/ds_core/gles_compat.cpp`
+  swaps some glad pointers for adapters (GLSL 1.40 -> ES 3.00 rewrite in glShaderSource with
+  precisions + `layout(location)` for the fragment outputs, 1555_REV <-> 5551 pixel conversion,
+  BGRA readback, glDrawBuffer/glClearDepth/glDepthRange/glMapBuffer/glBindFragDataLocation) and
+  loads ES 3.2 functions glad skips (it treats ES 3.2 as "GL 3.2"). The shaders in
+  `externals/melonDS/src/OpenGL_shaders` were edited to use explicit int->float conversions so
+  they compile as both GLSL 1.40 and GLSL ES 3.00 (checked with the Vulkan SDK's
+  glslangValidator); keep it that way when updating melonDS. melonDS-android-lib's own GLES
+  changes are NOT used (half-done: shaders still desktop, its 5551 swap breaks colours).
+- `src/ds_core/CMakeLists.txt` defines `MELONDS_GL_HEADER` on `core` (melonDS's default in
+  PlatformOGL.h is broken; only its Qt frontend CMake normally sets it), and
   `src/ds_core/cmake/MakeEmbed.cmake` forwards to melonDS's (its shader CMake uses CMAKE_SOURCE_DIR).
 - On MSVC-ABI builds melonDS needs `__WIN32__` defined and a dummy `dirent.h` (src/ds_core/compat).
 
@@ -102,7 +114,7 @@ The Android repo is owned by another Windows SID: use `git -c safe.directory=* .
   DS LAN glue: `DsLan` (JNI in `jni/ds/ds_lan_jni.cpp`), in-game join/leave/chat toasts.
 - LAN between desktop and Android: same core and protocol (UDP 7063 discovery, 7064 session).
   Checked host/join/password/chat with two desktop processes; not yet tested phone <-> PC.
-- Not done: Android OpenGL/upscaled DS rendering, screen filters (xBR/HQx/LCD), Vulkan, DS hotkeys, DS play-time tracking, AAC (DSi) decoding
+- Not done: DS OpenGL ES rendering not run on a device yet, screen filters (xBR/HQx/LCD), Vulkan, DS hotkeys, DS play-time tracking, AAC (DSi) decoding
   (faad2), mic/camera passthrough, multi-instance local MP in one process, per-game DS settings, libretro, Linux/macOS packaging of the shared library
   (rpath/bundle), CI (`.github/workflows/build.yml`).
 

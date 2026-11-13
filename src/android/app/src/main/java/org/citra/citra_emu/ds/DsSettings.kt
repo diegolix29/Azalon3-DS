@@ -21,6 +21,13 @@ class DsSettings {
     var jit: Boolean = true
     var threadedRenderer: Boolean = true
 
+    /** azds_renderer: 0 software, 1 OpenGL ES (upscaling). */
+    var renderer: Int = 0
+
+    /** Internal resolution of the OpenGL renderer, in multiples of 256x192. */
+    var scaleFactor: Int = 2
+    var betterPolygons: Boolean = false
+
     var nickname: String = "Azalon"
 
     /** 0 JP, 1 EN, 2 FR, 3 DE, 4 IT, 5 ES, 6 ZH, 7 KO. */
@@ -59,6 +66,9 @@ class DsSettings {
         const val KEY_DIRECT_BOOT = "ds_direct_boot"
         const val KEY_JIT = "ds_jit"
         const val KEY_THREADED_RENDERER = "ds_threaded_renderer"
+        const val KEY_RENDERER = "ds_renderer"
+        const val KEY_SCALE_FACTOR = "ds_scale_factor"
+        const val KEY_BETTER_POLYGONS = "ds_better_polygons"
         const val KEY_NICKNAME = "ds_nickname"
         const val KEY_LANGUAGE = "ds_language"
         const val KEY_FAVORITE_COLOR = "ds_favorite_color"
@@ -89,6 +99,9 @@ class DsSettings {
                 jit = prefs.getBoolean(KEY_JIT, defaults.jit)
                 threadedRenderer =
                     prefs.getBoolean(KEY_THREADED_RENDERER, defaults.threadedRenderer)
+                renderer = prefs.intFrom(KEY_RENDERER, defaults.renderer).coerceIn(0, 1)
+                scaleFactor = prefs.intFrom(KEY_SCALE_FACTOR, defaults.scaleFactor).coerceIn(1, 5)
+                betterPolygons = prefs.getBoolean(KEY_BETTER_POLYGONS, defaults.betterPolygons)
                 nickname = prefs.getString(KEY_NICKNAME, defaults.nickname)!!
                 language = prefs.intFrom(KEY_LANGUAGE, defaults.language)
                 favoriteColor = prefs.intFrom(KEY_FAVORITE_COLOR, defaults.favoriteColor)

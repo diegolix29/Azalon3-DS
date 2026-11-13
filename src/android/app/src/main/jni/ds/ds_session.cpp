@@ -5,6 +5,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <string>
+
+#include <dlfcn.h>
+#include <EGL/eglext.h>
 
 #include <azalon_ds/azalon_ds.h>
 
@@ -53,19 +57,18 @@ constexpr std::uint32_t ToRGBX(std::uint32_t v) {
            ((v & 0x000000FFu) << 16);
 }
 
-// The buffer is the screen size times a whole factor (see Session::SetSurfaceScale);
+// The buffer is the output size times a whole factor (see Session::ApplyGeometry);
 // anything above 1x is a nearest-neighbour upscale, so the compositor's bilinear
 // scaling to the view size barely blurs the pixels.
-void BlitScreen(const std::uint32_t* src, ANativeWindow_Buffer& buffer) {
-    const int scale = std::max(1, std::min(buffer.width / AZDS_SCREEN_WIDTH,
-                                           buffer.height / AZDS_SCREEN_HEIGHT));
+void BlitScreen(const std::uint32_t* src, int src_w, int src_h, ANativeWindow_Buffer& buffer) {
+    const int scale = std::max(1, std::min(buffer.width / src_w, buffer.height / src_h));
     auto* dst = static_cast<std::uint32_t*>(buffer.bits);
 
     if (scale == 1) {
-        const int width = std::min(buffer.width, AZDS_SCREEN_WIDTH);
-        const int height = std::min(buffer.height, AZDS_SCREEN_HEIGHT);
+        const int width = std::min(buffer.width, src_w);
+        const int height = std::min(buffer.height, src_h);
         for (int y = 0; y < height; y++) {
-            const std::uint32_t* in = src + static_cast<std::size_t>(y) * AZDS_SCREEN_WIDTH;
+            const std::uint32_t* in = src + static_cast<std::size_t>(y) * src_w;
             std::uint32_t* out = dst + static_cast<std::size_t>(y) * buffer.stride;
             for (int x = 0; x < width; x++) {
                 out[x] = ToRGBX(in[x]);
@@ -75,13 +78,13 @@ void BlitScreen(const std::uint32_t* src, ANativeWindow_Buffer& buffer) {
     }
 
     const std::size_t row_bytes =
-        static_cast<std::size_t>(AZDS_SCREEN_WIDTH) * scale * sizeof(std::uint32_t);
-    for (int y = 0; y < AZDS_SCREEN_HEIGHT; y++) {
-        const std::uint32_t* in = src + static_cast<std::size_t>(y) * AZDS_SCREEN_WIDTH;
+        static_cast<std::size_t>(src_w) * scale * sizeof(std::uint32_t);
+    for (int y = 0; y < src_h; y++) {
+        const std::uint32_t* in = src + static_cast<std::size_t>(y) * src_w;
         std::uint32_t* first =
             dst + static_cast<std::size_t>(y) * scale * static_cast<std::size_t>(buffer.stride);
         std::uint32_t* out = first;
-        for (int x = 0; x < AZDS_SCREEN_WIDTH; x++) {
+        for (int x = 0; x < src_w; x++) {
             const std::uint32_t v = ToRGBX(in[x]);
             for (int i = 0; i < scale; i++) {
                 *out++ = v;
@@ -91,6 +94,19 @@ void BlitScreen(const std::uint32_t* src, ANativeWindow_Buffer& buffer) {
             std::memcpy(first + static_cast<std::size_t>(i) * buffer.stride, first, row_bytes);
         }
     }
+}
+
+// GL loader for the DS core: core GLES entry points from libGLESv3, the rest through EGL.
+void* GetGLProcAddress(void*, const char* name) {
+    static void* const gles = [] {
+        void* lib = dlopen("libGLESv3.so", RTLD_NOW | RTLD_LOCAL);
+        return lib ? lib : dlopen("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
+    }();
+    void* proc = gles ? dlsym(gles, name) : nullptr;
+    if (!proc) {
+        proc = reinterpret_cast<void*>(eglGetProcAddress(name));
+    }
+    return proc;
 }
 
 const char* OrNull(const std::string& s) {
@@ -129,6 +145,8 @@ bool Session::Start(const StartParams& params, std::string* error) {
     config.console_type = params.console_type == 1 ? AZDS_CONSOLE_DSI : AZDS_CONSOLE_DS;
     config.renderer = AZDS_RENDERER_SOFTWARE;
     config.threaded_renderer = params.threaded_renderer ? 1 : 0;
+    config.scale_factor = params.scale_factor;
+    config.gl_better_polygons = params.better_polygons ? 1 : 0;
     config.jit_enable = params.jit ? 1 : 0;
     config.direct_boot = params.direct_boot ? 1 : 0;
     config.audio_sample_rate = sink ? sink->GetNativeSampleRate() : 48000.0;
@@ -196,7 +214,13 @@ bool Session::Start(const StartParams& params, std::string* error) {
     paused = false;
     fast_forward = false;
     running = true;
-    emu_thread = std::thread([this] { EmuLoop(); });
+    emu_thread = std::thread([this, renderer = params.renderer] {
+        if (renderer != AZDS_RENDERER_SOFTWARE) {
+            UseRenderer(renderer);
+        }
+        EmuLoop();
+        DestroyGL(); // back to software: azds_stop/destroy run on the UI thread
+    });
     LOG_INFO(Frontend, "[DS] started {}",
              params.rom_path.empty() ? std::string("firmware") : params.rom_path);
     return true;
@@ -275,15 +299,31 @@ void Session::SetSurface(Screen screen, ANativeWindow* window) {
     }
 
     std::lock_guard guard(surface_lock);
-    if (window) {
-        const int scale = surface_scale[index];
-        ANativeWindow_setBuffersGeometry(window, AZDS_SCREEN_WIDTH * scale,
-                                         AZDS_SCREEN_HEIGHT * scale, WINDOW_FORMAT_RGBX_8888);
-    }
     if (surfaces[index]) {
         ANativeWindow_release(surfaces[index]);
     }
     surfaces[index] = window;
+    surface_size[index][0] = surface_size[index][1] = 0;
+    ApplyGeometry(index);
+}
+
+void Session::ApplyGeometry(int index) {
+    ANativeWindow* window = surfaces[index];
+    if (!window) {
+        return;
+    }
+    // A whole multiple of the core's output (native, or upscaled by the OpenGL renderer)
+    // that is at least as big as the view asked for; BlitScreen fills it nearest-neighbour.
+    const int wanted = AZDS_SCREEN_WIDTH * surface_scale[index];
+    const int factor = std::max(1, wanted / std::max(1, output_width));
+    const int width = output_width * factor;
+    const int height = output_height * factor;
+    if (surface_size[index][0] == width && surface_size[index][1] == height) {
+        return;
+    }
+    ANativeWindow_setBuffersGeometry(window, width, height, WINDOW_FORMAT_RGBX_8888);
+    surface_size[index][0] = width;
+    surface_size[index][1] = height;
 }
 
 void Session::SetSurfaceScale(Screen screen, int scale) {
@@ -298,10 +338,7 @@ void Session::SetSurfaceScale(Screen screen, int scale) {
         return;
     }
     surface_scale[index] = scale;
-    if (surfaces[index]) {
-        ANativeWindow_setBuffersGeometry(surfaces[index], AZDS_SCREEN_WIDTH * scale,
-                                         AZDS_SCREEN_HEIGHT * scale, WINDOW_FORMAT_RGBX_8888);
-    }
+    ApplyGeometry(index);
 }
 
 void Session::SetTouch(bool pressed, int x, int y) {
@@ -319,11 +356,19 @@ void Session::SetLidClosed(bool closed) {
 
 void Session::PresentFrame() {
     const std::uint32_t* screens[kNumScreens] = {};
-    if (!azds_get_framebuffers(console, &screens[0], &screens[1])) {
+    int width = 0, height = 0;
+    if (!azds_get_framebuffers_ex(console, &screens[0], &screens[1], &width, &height)) {
         return;
     }
 
     std::lock_guard guard(surface_lock);
+    if (width != output_width || height != output_height) {
+        output_width = width;
+        output_height = height;
+        for (int i = 0; i < kNumScreens; i++) {
+            ApplyGeometry(i);
+        }
+    }
     for (int i = 0; i < kNumScreens; i++) {
         ANativeWindow* window = surfaces[i];
         if (!window || !screens[i]) {
@@ -333,9 +378,105 @@ void Session::PresentFrame() {
         if (ANativeWindow_lock(window, &buffer, nullptr) != 0) {
             continue;
         }
-        BlitScreen(screens[i], buffer);
+        BlitScreen(screens[i], width, height, buffer);
         ANativeWindow_unlockAndPost(window);
     }
+}
+
+void Session::UseRenderer(int renderer) {
+    if (renderer == AZDS_RENDERER_SOFTWARE) {
+        DestroyGL();
+        return;
+    }
+    if (azds_get_renderer(console) == renderer) {
+        return;
+    }
+    std::string error;
+    if (egl_context == EGL_NO_CONTEXT && !CreateGL(&error)) {
+        LOG_ERROR(Frontend, "[DS] {}", error);
+        NotifyMessage("DS: " + error + " Using the software renderer.");
+        DestroyGL();
+        return;
+    }
+    char err[512] = {};
+    if (!azds_gl_attach(console, static_cast<azds_renderer>(renderer), GetGLProcAddress, nullptr,
+                        err, sizeof(err))) {
+        LOG_ERROR(Frontend, "[DS] {}", err);
+        NotifyMessage(std::string("DS: ") + err);
+        DestroyGL();
+    }
+}
+
+bool Session::CreateGL(std::string* error) {
+#ifndef EGL_OPENGL_ES3_BIT_KHR
+#define EGL_OPENGL_ES3_BIT_KHR 0x0040
+#endif
+#ifndef EGL_CONTEXT_MINOR_VERSION_KHR
+#define EGL_CONTEXT_MINOR_VERSION_KHR 0x30FB
+#endif
+    egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (egl_display == EGL_NO_DISPLAY || !eglInitialize(egl_display, nullptr, nullptr)) {
+        egl_display = EGL_NO_DISPLAY;
+        *error = "Could not open the EGL display.";
+        return false;
+    }
+    const EGLint config_attribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RED_SIZE,        8,                      EGL_GREEN_SIZE,   8,
+        EGL_BLUE_SIZE,       8,                      EGL_ALPHA_SIZE,   8,
+        EGL_NONE};
+    EGLConfig config = nullptr;
+    EGLint num_configs = 0;
+    if (!eglChooseConfig(egl_display, config_attribs, &config, 1, &num_configs) ||
+        num_configs < 1) {
+        *error = "No OpenGL ES 3 configuration available.";
+        return false;
+    }
+    // The core draws into its own framebuffers; the pbuffer only makes the context current.
+    const EGLint pbuffer_attribs[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+    egl_surface = eglCreatePbufferSurface(egl_display, config, pbuffer_attribs);
+    if (egl_surface == EGL_NO_SURFACE) {
+        *error = "Could not create an EGL pbuffer.";
+        return false;
+    }
+    eglBindAPI(EGL_OPENGL_ES_API);
+    const EGLint es32_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_CONTEXT_MINOR_VERSION_KHR,
+                                   2, EGL_NONE};
+    egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, es32_attribs);
+    if (egl_context == EGL_NO_CONTEXT) {
+        // Without EGL_KHR_create_context drivers still hand out their newest 3.x.
+        const EGLint es3_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+        egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, es3_attribs);
+    }
+    if (egl_context == EGL_NO_CONTEXT) {
+        *error = "Could not create an OpenGL ES 3 context.";
+        return false;
+    }
+    if (!eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context)) {
+        *error = "Could not make the OpenGL ES context current.";
+        return false;
+    }
+    return true;
+}
+
+void Session::DestroyGL() {
+    if (console) {
+        azds_gl_detach(console); // frees the GL renderer while its context is current
+    }
+    if (egl_display == EGL_NO_DISPLAY) {
+        return;
+    }
+    eglMakeCurrent(egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (egl_context != EGL_NO_CONTEXT) {
+        eglDestroyContext(egl_display, egl_context);
+        egl_context = EGL_NO_CONTEXT;
+    }
+    if (egl_surface != EGL_NO_SURFACE) {
+        eglDestroySurface(egl_display, egl_surface);
+        egl_surface = EGL_NO_SURFACE;
+    }
+    // No eglTerminate: the display is shared with the 3DS renderer.
+    egl_display = EGL_NO_DISPLAY;
 }
 
 void Session::EmuLoop() {
@@ -378,8 +519,9 @@ void Session::EmuLoop() {
             was_touching = false;
         }
 
-        azds_run_frame(console);
-        PresentFrame();
+        if (azds_run_frame(console) != 0) { // 0: the frame went to compiling GL shaders
+            PresentFrame();
+        }
 
         fps_frames++;
         const auto now = clock::now();

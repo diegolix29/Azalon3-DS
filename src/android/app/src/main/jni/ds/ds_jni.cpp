@@ -29,6 +29,7 @@ static_assert(AZDS_SCREEN_WIDTH == 256 && AZDS_SCREEN_HEIGHT == 192,
 
 jclass s_ds_native_class = nullptr;
 jmethodID s_on_stopped = nullptr;
+jmethodID s_on_message = nullptr;
 
 jobject MakeRomInfo(JNIEnv* env, const azds_rom_info& info) {
     jclass clazz = env->FindClass("org/citra/citra_emu/ds/DsRomInfo");
@@ -86,6 +87,19 @@ void NotifyStopped() {
     env->CallStaticVoidMethod(s_ds_native_class, s_on_stopped);
 }
 
+void NotifyMessage(const std::string& text) {
+    if (!s_ds_native_class || !s_on_message) {
+        return;
+    }
+    JNIEnv* env = IDCache::GetEnvForThread();
+    if (!env) {
+        return;
+    }
+    jstring jtext = ToJString(env, text);
+    env->CallStaticVoidMethod(s_ds_native_class, s_on_message, jtext);
+    env->DeleteLocalRef(jtext);
+}
+
 } // namespace DS
 
 extern "C" {
@@ -109,6 +123,12 @@ JNIEXPORT void JNICALL Java_org_citra_citra_1emu_ds_DsNative_nativeInit(JNIEnv* 
             env->ExceptionClear();
             LOG_ERROR(Frontend, "[DS] DsNative.onEmulationStopped is missing");
         }
+        s_on_message = env->GetStaticMethodID(s_ds_native_class, "onEmulationMessage",
+                                              "(Ljava/lang/String;)V");
+        if (!s_on_message) {
+            env->ExceptionClear();
+            LOG_ERROR(Frontend, "[DS] DsNative.onEmulationMessage is missing");
+        }
         env->DeleteLocalRef(clazz);
     }
     if (azds_api_version() != AZDS_API_VERSION) {
@@ -120,7 +140,8 @@ JNIEXPORT void JNICALL Java_org_citra_citra_1emu_ds_DsNative_nativeInit(JNIEnv* 
 
 JNIEXPORT jstring JNICALL Java_org_citra_citra_1emu_ds_DsNative_nativeStart(
     JNIEnv* env, jclass, jstring rom_path, jstring save_path, jstring data_dir, jint console_type,
-    jboolean direct_boot, jboolean jit, jboolean threaded_renderer, jstring nickname,
+    jboolean direct_boot, jboolean jit, jboolean threaded_renderer, jint renderer,
+    jint scale_factor, jboolean better_polygons, jstring nickname,
     jint language, jint favorite_color, jstring ds_bios9, jstring ds_bios7, jstring ds_firmware,
     jstring dsi_bios9, jstring dsi_bios7, jstring dsi_firmware, jstring dsi_nand,
     jboolean dldi_enable, jstring dldi_sync_folder, jint wireless_mode, jboolean internet) {
@@ -132,6 +153,9 @@ JNIEXPORT jstring JNICALL Java_org_citra_citra_1emu_ds_DsNative_nativeStart(
     params.direct_boot = direct_boot;
     params.jit = jit;
     params.threaded_renderer = threaded_renderer;
+    params.renderer = renderer;
+    params.scale_factor = scale_factor;
+    params.better_polygons = better_polygons;
     params.nickname = GetJString(env, nickname);
     params.language = language;
     params.favorite_color = favorite_color;

@@ -51,6 +51,10 @@ object DsNative {
     @Volatile
     var onStopped: (() -> Unit)? = null
 
+    /** Short messages from the core for the user, e.g. a renderer fallback. Any thread. */
+    @Volatile
+    var onMessage: ((String) -> Unit)? = null
+
     init {
         // Idempotent: NativeLibrary usually got there first. libcitra-android.so
         // pulls in libazalon_ds.so, which holds the DS core itself.
@@ -89,6 +93,9 @@ object DsNative {
                 settings.directBoot,
                 settings.jit,
                 settings.threadedRenderer,
+                settings.renderer,
+                settings.scaleFactor,
+                settings.betterPolygons,
                 settings.nickname,
                 settings.language,
                 settings.favoriteColor,
@@ -134,6 +141,9 @@ object DsNative {
         directBoot: Boolean,
         jit: Boolean,
         threadedRenderer: Boolean,
+        renderer: Int,
+        scaleFactor: Int,
+        betterPolygons: Boolean,
         nickname: String,
         language: Int,
         favoriteColor: Int,
@@ -196,6 +206,14 @@ object DsNative {
 
     @JvmStatic
     external fun getFps(): Double
+
+    /** Called from the emulation thread. */
+    @Keep
+    @JvmStatic
+    fun onEmulationMessage(text: String) {
+        Log.info("[DS] $text")
+        onMessage?.invoke(text)
+    }
 
     /** Called from the emulation thread. */
     @Keep

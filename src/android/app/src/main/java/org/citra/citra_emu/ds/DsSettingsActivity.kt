@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
@@ -107,6 +108,20 @@ class DsSettingsActivity : AppCompatActivity() {
                 }
             }
             updateSummaries()
+            // Resolution and polygon splitting only apply to the OpenGL ES renderer,
+            // threading only to the software one.
+            val rendererPref = findPreference<ListPreference>(DsSettings.KEY_RENDERER)
+            fun updateRendererDeps(value: String?) {
+                val gl = value == "1"
+                findPreference<Preference>(DsSettings.KEY_SCALE_FACTOR)?.isEnabled = gl
+                findPreference<Preference>(DsSettings.KEY_BETTER_POLYGONS)?.isEnabled = gl
+                findPreference<Preference>(DsSettings.KEY_THREADED_RENDERER)?.isEnabled = !gl
+            }
+            updateRendererDeps(rendererPref?.value)
+            rendererPref?.setOnPreferenceChangeListener { _, newValue ->
+                updateRendererDeps(newValue as? String)
+                true
+            }
             findPreference<Preference>(DsSettings.KEY_DLDI_SYNC_FOLDER)?.summaryProvider =
                 Preference.SummaryProvider<Preference> { pref ->
                     pref.sharedPreferences?.getString(pref.key, "")

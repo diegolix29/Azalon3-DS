@@ -64,6 +64,11 @@ const std::string& GetDataDir();
 /// Builds the melonDS render settings from the console's current values (console.cpp).
 void ApplyRenderSettings(azds_console& console);
 
+/// OpenGL ES: makes melonDS's desktop GL renderer work on an ES 3.2 context by swapping
+/// some of glad's function pointers for adapters (gles_compat.cpp). Call right after glad
+/// was loaded, with the same loader. Returns false (and why) if the driver can't do it.
+bool InstallGLESCompat(void* (*load)(const char*), std::string* error);
+
 /// Networking glue (net.cpp).
 void NetRegisterInstance(int instance);
 void NetUnregisterInstance(int instance);

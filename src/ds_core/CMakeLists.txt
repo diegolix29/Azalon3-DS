@@ -54,15 +54,10 @@ set(ENABLE_GDBSTUB OFF CACHE BOOL "" FORCE)
 set(ENABLE_LTO OFF CACHE BOOL "" FORCE)
 set(ENABLE_LTO_RELEASE OFF CACHE BOOL "" FORCE)
 set(ENABLE_JIT_PROFILING OFF CACHE BOOL "" FORCE)
-# melonDS's OpenGL / OpenGL compute renderers (upscaling). They need desktop OpenGL
-# (GLSL 1.40, compute: GL 4.3); the frontend owns the context and passes its
-# GetProcAddress to azds_gl_attach(). Off on Android (GLES only) for now.
-if (ANDROID)
-    set(_azds_gl_default OFF)
-else()
-    set(_azds_gl_default ON)
-endif()
-option(AZDS_ENABLE_OPENGL "Build melonDS's OpenGL renderers into azalon_ds" ${_azds_gl_default})
+# melonDS's OpenGL / OpenGL compute renderers (upscaling). The frontend owns the context
+# and passes its GetProcAddress to azds_gl_attach(). Desktop OpenGL 3.2+ (compute: 4.3),
+# or OpenGL ES 3.2 through the adapters in gles_compat.cpp (Android).
+option(AZDS_ENABLE_OPENGL "Build melonDS's OpenGL renderers into azalon_ds" ON)
 set(ENABLE_OGLRENDERER ${AZDS_ENABLE_OPENGL} CACHE BOOL "" FORCE)
 
 if (WIN32 AND NOT MINGW)
@@ -72,6 +67,12 @@ endif()
 
 
 add_subdirectory("${MELONDS_SOURCE_DIR}" melonds EXCLUDE_FROM_ALL)
+
+if (AZDS_ENABLE_OPENGL)
+    # PlatformOGL.h's fallback value for this is wrongly double-quoted; melonDS's own Qt
+    # frontend always defines it (src/frontend/qt_sdl/CMakeLists.txt), so do the same.
+    target_compile_definitions(core PUBLIC [[MELONDS_GL_HEADER="frontend/glad/glad.h"]])
+endif()
 
 # --- networking: melonDS net (LAN / local MP / slirp internet) ----------------
 
@@ -106,11 +107,14 @@ add_library(azalon_ds SHARED
     platform.cpp
     net.cpp
     gl.cpp
+    gles_compat.cpp
 )
 if (AZDS_ENABLE_OPENGL)
     # glad lives inside the library (hidden symbols), loaded from the frontend's context.
     target_sources(azalon_ds PRIVATE "${MELONDS_SOURCE_DIR}/src/frontend/glad/glad.c")
     target_compile_definitions(azalon_ds PRIVATE AZDS_HAVE_OPENGL)
+    # glad.c's own loader (gladLoadGL, unused here) references dlopen.
+    target_link_libraries(azalon_ds PRIVATE ${CMAKE_DL_LIBS})
 endif()
 target_include_directories(azalon_ds
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"

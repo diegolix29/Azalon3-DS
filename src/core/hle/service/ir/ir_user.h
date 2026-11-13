@@ -4,15 +4,22 @@
 
 #pragma once
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <span>
+#include <vector>
 #include "core/hle/service/service.h"
 
 namespace Kernel {
 class Event;
 class SharedMemory;
 } // namespace Kernel
+
+namespace Core {
+class Timing;
+struct TimingEventType;
+} // namespace Core
 
 namespace Service::HID {
 class ArticBaseController;
@@ -22,6 +29,7 @@ namespace Service::IR {
 
 class BufferManager;
 class ExtraHID;
+class IrLanLink;
 
 /// An interface representing a device that can communicate with 3DS via ir:USER service
 class IRDevice {
@@ -167,13 +175,61 @@ private:
      */
     void ReleaseReceivedData(Kernel::HLERequestContext& ctx);
 
+    // 3DS <-> 3DS connections, emulated over the LAN by IrLanLink.
+    void WaitConnection(Kernel::HLERequestContext& ctx);
+    void AutoConnection(Kernel::HLERequestContext& ctx);
+    void AnyConnection(Kernel::HLERequestContext& ctx);
+    void SendIrNopLarge(Kernel::HLERequestContext& ctx);
+    void ClearReceiveBuffer(Kernel::HLERequestContext& ctx);
+    void ClearSendBuffer(Kernel::HLERequestContext& ctx);
+    void GetLatestReceiveErrorResult(Kernel::HLERequestContext& ctx);
+    void GetLatestSendErrorResult(Kernel::HLERequestContext& ctx);
+    void GetConnectionStatus(Kernel::HLERequestContext& ctx);
+    void GetTryingToConnectStatus(Kernel::HLERequestContext& ctx);
+    void GetConnectionRole(Kernel::HLERequestContext& ctx);
+    void GetReceiveSizeFreeAndUsed(Kernel::HLERequestContext& ctx);
+    void GetSendSizeFreeAndUsed(Kernel::HLERequestContext& ctx);
+    void SetOwnMachineId(Kernel::HLERequestContext& ctx);
+
     void PutToReceive(std::span<const u8> payload);
+    /// Moves queued packets into the receive buffer once the game has released room.
+    void FlushPendingReceive();
+
+    /// Sends a payload to whatever is connected (Circle Pad Pro or LAN peer).
+    Result SendPayload(std::span<const u8> payload);
+
+    /// Reads one byte of the shared memory status header, 0 without shared memory.
+    u8 ReadStatusByte(std::size_t offset) const;
+    void WriteStatusByte(std::size_t offset, u8 value);
+
+    void StartLanConnection(u8 mode);
+    void StopLanConnection(bool notify_peer);
+    void OnLanConnected(u8 role, u8 network_id);
+    void OnLanDisconnected();
+    void OnLanData(std::span<const u8> payload);
+    void LanPoll(s64 cycles_late);
 
     std::shared_ptr<Kernel::Event> conn_status_event, send_event, receive_event;
     std::shared_ptr<Kernel::SharedMemory> shared_memory;
     bool connected_device;
     std::unique_ptr<BufferManager> receive_buffer;
     std::unique_ptr<ExtraHID> extra_hid;
+
+    // Not serialized: a savestate never carries a live LAN link.
+    Core::Timing& timing;
+    std::unique_ptr<IrLanLink> ir_lan;
+    Core::TimingEventType* lan_poll_event = nullptr;
+    bool lan_connected = false;
+    bool lan_polling = false;
+
+    // Buffer sizes from InitializeIrNopShared (data area, without the PacketInfo table).
+    // Not serialized; only used to answer Get*SizeFreeAndUsed.
+    u32 recv_data_size = 0;
+    u32 send_data_size = 0;
+
+    // Framed packets that did not fit in the receive buffer yet (not serialized).
+    static constexpr std::size_t MaxPendingReceive = 64;
+    std::deque<std::vector<u8>> pending_receive;
 
 private:
     template <class Archive>

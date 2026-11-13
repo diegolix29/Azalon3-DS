@@ -41,7 +41,8 @@ inline const QColor BadgeDSi{0xc0, 0x84, 0xfc};
 bool IsActive();
 
 /// Switches the application style: Fusion + dark palette when `active`, otherwise restores the
-/// style the application started with. Call before applying the stylesheet.
+/// style the application started with. Either way it is wrapped in a proxy that makes long
+/// menus scrollable. Call before applying the stylesheet.
 void ApplyApplicationStyle(bool active);
 
 enum class Glyph {

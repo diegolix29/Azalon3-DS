@@ -12,6 +12,7 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QPropertyAnimation>
+#include <QProxyStyle>
 #include <QScreen>
 #include <QStyle>
 #include <QStyleFactory>
@@ -23,6 +24,39 @@ namespace AzalonUI {
 
 namespace {
 QString g_original_style;
+QString g_current_style;
+
+/// The application style, wrapped so that long menus (the Amiibo lists) scroll instead of
+/// running off screen. This must be set once for the whole application. Giving single widgets
+/// their own QStyle (as the Amiibo menus used to do) lets Qt replace their stylesheet proxy
+/// while the style is still polishing them. That is a use-after-free that randomly crashed
+/// startup inside GMainWindow::show().
+class AppStyle : public QProxyStyle {
+public:
+    explicit AppStyle(QStyle* base) : QProxyStyle(base) {}
+
+    int styleHint(StyleHint hint, const QStyleOption* option = nullptr,
+                  const QWidget* widget = nullptr,
+                  QStyleHintReturn* return_data = nullptr) const override {
+        if (hint == QStyle::SH_Menu_Scrollable) {
+            return 1;
+        }
+        return QProxyStyle::styleHint(hint, option, widget, return_data);
+    }
+};
+
+/// Makes `key` (a QStyleFactory name) the base of the application style, if it isn't already.
+void SetBaseStyle(const QString& key) {
+    if (!g_current_style.isEmpty() && !g_current_style.compare(key, Qt::CaseInsensitive)) {
+        return;
+    }
+    QStyle* base = QStyleFactory::create(key);
+    if (!base) {
+        base = QStyleFactory::create(QStringLiteral("Fusion"));
+    }
+    g_current_style = key;
+    QApplication::setStyle(new AppStyle(base)); // The proxy owns `base`.
+}
 
 /// Lets QMenu popups have rounded corners (the stylesheet's border-radius) by giving them a
 /// translucent window. Only touches menus first shown while the theme is active.
@@ -241,17 +275,12 @@ void ApplyApplicationStyle(bool active) {
             g_popup_polisher = new PopupPolisher(qApp);
             qApp->installEventFilter(g_popup_polisher);
         }
-        if (QApplication::style()->name().compare(QStringLiteral("fusion"), Qt::CaseInsensitive)) {
-            QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
-        }
+        SetBaseStyle(QStringLiteral("Fusion"));
         QApplication::setPalette(DarkPalette());
         return;
     }
 
-    if (!g_original_style.isEmpty() &&
-        QApplication::style()->name().compare(g_original_style, Qt::CaseInsensitive)) {
-        QApplication::setStyle(QStyleFactory::create(g_original_style));
-    }
+    SetBaseStyle(g_original_style.isEmpty() ? QStringLiteral("Fusion") : g_original_style);
     QApplication::setPalette(QApplication::style()->standardPalette());
 }
 

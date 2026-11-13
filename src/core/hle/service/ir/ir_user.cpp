@@ -2,6 +2,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the misc/licenses/gplv2.txt file included.
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <memory>
 #include <vector>
 #include <boost/crc.hpp>
@@ -15,26 +18,15 @@
 #include "core/hle/ipc_helpers.h"
 #include "core/hle/kernel/event.h"
 #include "core/hle/kernel/shared_memory.h"
+#include "core/core_timing.h"
 #include "core/hle/service/ir/extra_hid.h"
+#include "core/hle/service/ir/ir_lan.h"
 #include "core/hle/service/ir/ir_user.h"
 
 SERIALIZE_EXPORT_IMPL(Service::IR::IR_USER)
 SERVICE_CONSTRUCT_IMPL(Service::IR::IR_USER)
 
 namespace Service::IR {
-
-template <class Archive>
-void IR_USER::serialize(Archive& ar, const unsigned int) {
-    DEBUG_SERIALIZATION_POINT;
-    ar& boost::serialization::base_object<Kernel::SessionRequestHandler>(*this);
-    ar & conn_status_event;
-    ar & send_event;
-    ar & receive_event;
-    ar & shared_memory;
-    ar & connected_device;
-    ar & receive_buffer;
-    ar&* extra_hid.get();
-}
 
 // This is a header that will present in the ir:USER shared memory if it is initialized with
 // InitializeIrNopShared service function. Otherwise the shared memory doesn't have this header if
@@ -57,6 +49,29 @@ struct SharedMemoryHeader {
     // games usually don't access it, we don't emulate it.
 };
 static_assert(sizeof(SharedMemoryHeader) == 16, "SharedMemoryHeader has wrong size!");
+
+template <class Archive>
+void IR_USER::serialize(Archive& ar, const unsigned int) {
+    DEBUG_SERIALIZATION_POINT;
+    ar& boost::serialization::base_object<Kernel::SessionRequestHandler>(*this);
+    ar & conn_status_event;
+    ar & send_event;
+    ar & receive_event;
+    ar & shared_memory;
+    ar & connected_device;
+    ar & receive_buffer;
+    ar&* extra_hid.get();
+    if constexpr (Archive::is_loading::value) {
+        // A LAN link can't be restored from a savestate. Drop it and, if the state was saved
+        // while linked to another console, report the link as gone.
+        StopLanConnection(false);
+        if (!connected_device && shared_memory &&
+            ReadStatusByte(offsetof(SharedMemoryHeader, connected)) != 0) {
+            WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 0);
+            WriteStatusByte(offsetof(SharedMemoryHeader, connected), 0);
+        }
+    }
+}
 
 /**
  * A manager of the send/receive buffers in the shared memory. Currently it is only used for the
@@ -106,20 +121,38 @@ public:
         }
 
         u32 write_offset;
+        const u32 size = static_cast<u32>(packet.size());
 
-        // finds free space offset in data buffer
+        // Finds free space in the data buffer. A packet is never split across the end of the
+        // buffer: games read a packet as one contiguous block, so a wrapped packet arrives
+        // corrupted (seen with Pokémon ORAS IR, whose 229-byte frames fill a 586-byte buffer).
         if (info.packet_count == 0) {
             write_offset = 0;
-            if (packet.size() > max_data_size)
+            if (size > max_data_size)
                 return false;
         } else {
             const u32 last_index = (info.end_index + max_packet_count - 1) % max_packet_count;
             const PacketInfo first = GetPacketInfo(info.begin_index);
             const PacketInfo last = GetPacketInfo(last_index);
-            write_offset = (last.offset + last.size) % max_data_size;
-            const u32 free_space = (first.offset + max_data_size - write_offset) % max_data_size;
-            if (packet.size() > free_space)
-                return false;
+            const u32 begin = first.offset;
+            const u32 end = last.offset + last.size;
+            if (end > begin) {
+                // Used: [begin, end). Free: [end, max) then [0, begin).
+                if (end + size <= max_data_size) {
+                    write_offset = end;
+                } else if (size <= begin) {
+                    write_offset = 0;
+                } else {
+                    return false;
+                }
+            } else {
+                // Already wrapped. Free: [end, begin).
+                if (end + size <= begin) {
+                    write_offset = end;
+                } else {
+                    return false;
+                }
+            }
         }
 
         // writes packet info
@@ -127,9 +160,7 @@ public:
         SetPacketInfo(info.end_index, packet_info);
 
         // writes packet data
-        for (std::size_t i = 0; i < packet.size(); ++i) {
-            *GetDataBufferPointer((write_offset + i) % max_data_size) = packet[i];
-        }
+        std::memcpy(GetDataBufferPointer(write_offset), packet.data(), size);
 
         // updates buffer info
         info.end_index++;
@@ -153,6 +184,26 @@ public:
         info.begin_index %= max_packet_count;
         UpdateBufferInfo();
         return true;
+    }
+
+    /// Bytes of packet data currently held.
+    u32 UsedDataSize() {
+        if (info.packet_count == 0) {
+            return 0;
+        }
+        const u32 last_index = (info.end_index + max_packet_count - 1) % max_packet_count;
+        const PacketInfo first = GetPacketInfo(info.begin_index);
+        const PacketInfo last = GetPacketInfo(last_index);
+        const u32 end = last.offset + last.size;
+        return end > first.offset ? end - first.offset : end + max_data_size - first.offset;
+    }
+
+    /// Drops every packet in the buffer.
+    void Clear() {
+        info.begin_index = 0;
+        info.end_index = 0;
+        info.packet_count = 0;
+        UpdateBufferInfo();
     }
 
 private:
@@ -267,10 +318,27 @@ void IR_USER::PutToReceive(std::span<const u8> payload) {
     // calculates CRC and puts to the end
     packet.push_back(boost::crc<8, 0x07, 0, 0, false, false>(packet.data(), packet.size()));
 
-    if (receive_buffer->Put(packet)) {
+    // Keep order: never overtake packets still waiting for room.
+    if (pending_receive.empty() && receive_buffer->Put(packet)) {
         receive_event->Signal();
+    } else if (pending_receive.size() < MaxPendingReceive) {
+        // The game has not released enough data yet; hand the packet over on the next
+        // ReleaseReceivedData instead of dropping it (real IR would just arrive later).
+        pending_receive.push_back(std::move(packet));
     } else {
         LOG_ERROR(Service_IR, "receive buffer is full!");
+    }
+}
+
+void IR_USER::FlushPendingReceive() {
+    bool put_any = false;
+    while (receive_buffer && !pending_receive.empty() &&
+           receive_buffer->Put(pending_receive.front())) {
+        pending_receive.pop_front();
+        put_any = true;
+    }
+    if (put_any) {
+        receive_event->Signal();
     }
 }
 
@@ -290,6 +358,12 @@ void IR_USER::InitializeIrNopShared(Kernel::HLERequestContext& ctx) {
 
     receive_buffer = std::make_unique<BufferManager>(shared_memory, 0x10, 0x20,
                                                      recv_buff_packet_count, recv_buff_size);
+    recv_data_size = recv_buff_size > 8 * recv_buff_packet_count
+                         ? recv_buff_size - 8 * recv_buff_packet_count
+                         : 0;
+    send_data_size = send_buff_size > 8 * send_buff_packet_count
+                         ? send_buff_size - 8 * send_buff_packet_count
+                         : 0;
     SharedMemoryHeader shared_memory_init{};
     shared_memory_init.initialized = 1;
     std::memcpy(shared_memory->GetPointer(), &shared_memory_init, sizeof(SharedMemoryHeader));
@@ -320,9 +394,10 @@ void IR_USER::RequireConnection(Kernel::HLERequestContext& ctx) {
         extra_hid->OnConnect();
         conn_status_event->Signal();
     } else {
-        LOG_WARNING(Service_IR, "unknown device id {}. Won't connect.", device_id);
-        shared_memory_ptr[offsetof(SharedMemoryHeader, connection_status)] = 1;
-        shared_memory_ptr[offsetof(SharedMemoryHeader, trying_to_connect_status)] = 2;
+        // Anything but the Circle Pad Pro / New 3DS HID is taken as another console.
+        LOG_INFO(Service_IR, "device id {}: connecting to another console over the LAN",
+                 device_id);
+        StartLanConnection(static_cast<u8>(IrLanLink::Mode::Require));
     }
 
     IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
@@ -355,10 +430,14 @@ void IR_USER::Disconnect(Kernel::HLERequestContext& ctx) {
         connected_device = false;
         conn_status_event->Signal();
     }
+    if (lan_connected) {
+        conn_status_event->Signal();
+    }
+    StopLanConnection(true);
 
-    u8* shared_memory_ptr = shared_memory->GetPointer();
-    shared_memory_ptr[offsetof(SharedMemoryHeader, connection_status)] = 0;
-    shared_memory_ptr[offsetof(SharedMemoryHeader, connected)] = 0;
+    WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 0);
+    WriteStatusByte(offsetof(SharedMemoryHeader, trying_to_connect_status), 0);
+    WriteStatusByte(offsetof(SharedMemoryHeader, connected), 0);
 
     IPC::RequestBuilder rb(ctx, 0x09, 1, 0);
     rb.Push(ResultSuccess);
@@ -380,9 +459,11 @@ void IR_USER::FinalizeIrNop(Kernel::HLERequestContext& ctx) {
         extra_hid->OnDisconnect();
         connected_device = false;
     }
+    StopLanConnection(true);
 
     shared_memory = nullptr;
     receive_buffer = nullptr;
+    pending_receive.clear();
 
     IPC::RequestBuilder rb(ctx, 0x02, 1, 0);
     rb.Push(ResultSuccess);
@@ -397,17 +478,252 @@ void IR_USER::SendIrNop(Kernel::HLERequestContext& ctx) {
     ASSERT(size == buffer.size());
 
     IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
-    if (connected_device) {
-        extra_hid->OnReceive(buffer);
-        send_event->Signal();
-        rb.Push(ResultSuccess);
-    } else {
-        LOG_ERROR(Service_IR, "not connected");
-        rb.Push(Result(static_cast<ErrorDescription>(13), ErrorModule::IR,
-                       ErrorSummary::InvalidState, ErrorLevel::Status));
-    }
+    rb.Push(SendPayload(buffer));
 
     LOG_TRACE(Service_IR, "called, data={}", fmt::format("{:02x}", fmt::join(buffer, " ")));
+}
+
+void IR_USER::SendIrNopLarge(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    const u32 size = rp.Pop<u32>();
+    auto& mapped = rp.PopMappedBuffer();
+    std::vector<u8> buffer(std::min<std::size_t>(size, mapped.GetSize()));
+    mapped.Read(buffer.data(), 0, buffer.size());
+
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 2);
+    rb.Push(SendPayload(buffer));
+    rb.PushMappedBuffer(mapped);
+
+    LOG_TRACE(Service_IR, "called, size={}", size);
+}
+
+Result IR_USER::SendPayload(std::span<const u8> payload) {
+    if (connected_device) {
+        extra_hid->OnReceive(payload);
+        send_event->Signal();
+        return ResultSuccess;
+    }
+    if (lan_connected && ir_lan->Send(payload)) {
+        send_event->Signal();
+        return ResultSuccess;
+    }
+    LOG_ERROR(Service_IR, "not connected");
+    return Result(static_cast<ErrorDescription>(13), ErrorModule::IR, ErrorSummary::InvalidState,
+                  ErrorLevel::Status);
+}
+
+u8 IR_USER::ReadStatusByte(std::size_t offset) const {
+    return shared_memory ? *shared_memory->GetPointer(static_cast<u32>(offset)) : 0;
+}
+
+void IR_USER::WriteStatusByte(std::size_t offset, u8 value) {
+    if (shared_memory) {
+        *shared_memory->GetPointer(static_cast<u32>(offset)) = value;
+    }
+}
+
+void IR_USER::StartLanConnection(u8 mode) {
+    if (!shared_memory) {
+        LOG_ERROR(Service_IR, "connection requested before InitializeIrNopShared");
+        return;
+    }
+    if (connected_device) {
+        // Already linked to the Circle Pad Pro.
+        return;
+    }
+    if (!ir_lan->Start(static_cast<IrLanLink::Mode>(mode))) {
+        // No socket: behave like a console with nothing in front of its IR port.
+        WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 1);
+        WriteStatusByte(offsetof(SharedMemoryHeader, trying_to_connect_status), 2);
+        return;
+    }
+    if (!lan_connected) {
+        WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 1);
+        WriteStatusByte(offsetof(SharedMemoryHeader, trying_to_connect_status), 2);
+    }
+    if (!lan_polling) {
+        lan_polling = true;
+        timing.ScheduleEvent(msToCycles(1), lan_poll_event);
+    }
+}
+
+void IR_USER::StopLanConnection(bool notify_peer) {
+    if (ir_lan) {
+        ir_lan->Stop(notify_peer);
+    }
+    lan_connected = false;
+}
+
+void IR_USER::LanPoll(s64 cycles_late) {
+    if (!ir_lan || !ir_lan->IsActive()) {
+        lan_polling = false;
+        return;
+    }
+    ir_lan->Poll();
+    if (ir_lan->IsActive()) {
+        timing.ScheduleEvent(msToCycles(1) - cycles_late, lan_poll_event);
+    } else {
+        lan_polling = false;
+    }
+}
+
+void IR_USER::OnLanConnected(u8 role, u8 network_id) {
+    lan_connected = true;
+    pending_receive.clear();
+    WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 2);
+    WriteStatusByte(offsetof(SharedMemoryHeader, trying_to_connect_status), 0);
+    WriteStatusByte(offsetof(SharedMemoryHeader, connection_role), role);
+    WriteStatusByte(offsetof(SharedMemoryHeader, network_id), network_id);
+    WriteStatusByte(offsetof(SharedMemoryHeader, connected), 1);
+    conn_status_event->Signal();
+}
+
+void IR_USER::OnLanDisconnected() {
+    lan_connected = false;
+    WriteStatusByte(offsetof(SharedMemoryHeader, connection_status), 0);
+    WriteStatusByte(offsetof(SharedMemoryHeader, connected), 0);
+    conn_status_event->Signal();
+}
+
+void IR_USER::OnLanData(std::span<const u8> payload) {
+    if (receive_buffer && payload.size() < 0x4000) {
+        PutToReceive(payload);
+    }
+}
+
+void IR_USER::WaitConnection(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    // 3 parameter words; their meaning is unknown (probably a device id and a timeout).
+    const u32 p0 = rp.Pop<u32>();
+    const u32 p1 = rp.Pop<u32>();
+    const u32 p2 = rp.Pop<u32>();
+
+    StartLanConnection(static_cast<u8>(IrLanLink::Mode::Wait));
+
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_INFO(Service_IR, "called, params={:08x} {:08x} {:08x}", p0, p1, p2);
+}
+
+void IR_USER::AutoConnection(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    // 11 parameter words; their meaning is unknown (timings for alternating wait/require).
+    std::array<u32, 11> params{};
+    for (auto& p : params) {
+        p = rp.Pop<u32>();
+    }
+
+    StartLanConnection(static_cast<u8>(IrLanLink::Mode::Auto));
+
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_DEBUG(Service_IR, "called, params={:08x}", fmt::join(params, " "));
+}
+
+void IR_USER::AnyConnection(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    StartLanConnection(static_cast<u8>(IrLanLink::Mode::Auto));
+
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_INFO(Service_IR, "called");
+}
+
+void IR_USER::ClearReceiveBuffer(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    if (receive_buffer) {
+        receive_buffer->Clear();
+    }
+    pending_receive.clear();
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_DEBUG(Service_IR, "called");
+}
+
+void IR_USER::ClearSendBuffer(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    // Sends complete immediately, so the send buffer is always empty.
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_DEBUG(Service_IR, "called");
+}
+
+void IR_USER::GetLatestReceiveErrorResult(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    u32 value = 0;
+    if (shared_memory) {
+        std::memcpy(&value,
+                    shared_memory->GetPointer(
+                        offsetof(SharedMemoryHeader, latest_receive_error_result)),
+                    sizeof(value));
+    }
+    IPC::RequestBuilder rb = rp.MakeBuilder(2, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(value);
+}
+
+void IR_USER::GetLatestSendErrorResult(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    u32 value = 0;
+    if (shared_memory) {
+        std::memcpy(&value,
+                    shared_memory->GetPointer(offsetof(SharedMemoryHeader, latest_send_error_result)),
+                    sizeof(value));
+    }
+    IPC::RequestBuilder rb = rp.MakeBuilder(2, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(value);
+}
+
+void IR_USER::GetConnectionStatus(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    IPC::RequestBuilder rb = rp.MakeBuilder(2, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(static_cast<u32>(ReadStatusByte(offsetof(SharedMemoryHeader, connection_status))));
+}
+
+void IR_USER::GetTryingToConnectStatus(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    IPC::RequestBuilder rb = rp.MakeBuilder(2, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(
+        static_cast<u32>(ReadStatusByte(offsetof(SharedMemoryHeader, trying_to_connect_status))));
+}
+
+void IR_USER::GetConnectionRole(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    IPC::RequestBuilder rb = rp.MakeBuilder(2, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(static_cast<u32>(ReadStatusByte(offsetof(SharedMemoryHeader, connection_role))));
+}
+
+void IR_USER::GetReceiveSizeFreeAndUsed(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    const u32 used = receive_buffer ? std::min(receive_buffer->UsedDataSize(), recv_data_size) : 0;
+    IPC::RequestBuilder rb = rp.MakeBuilder(3, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(recv_data_size - used);
+    rb.Push(used);
+    LOG_TRACE(Service_IR, "called, free={}, used={}", recv_data_size - used, used);
+}
+
+void IR_USER::GetSendSizeFreeAndUsed(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    // Sends complete immediately, so the whole send buffer is always free.
+    IPC::RequestBuilder rb = rp.MakeBuilder(3, 0);
+    rb.Push(ResultSuccess);
+    rb.Push(send_data_size);
+    rb.Push(0u);
+    LOG_TRACE(Service_IR, "called, free={}", send_data_size);
+}
+
+void IR_USER::SetOwnMachineId(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp(ctx);
+    const u8 machine_id = rp.Pop<u8>();
+    WriteStatusByte(offsetof(SharedMemoryHeader, machine_id), machine_id);
+    IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
+    rb.Push(ResultSuccess);
+    LOG_INFO(Service_IR, "called, machine_id={}", machine_id);
 }
 
 void IR_USER::ReleaseReceivedData(Kernel::HLERequestContext& ctx) {
@@ -416,7 +732,8 @@ void IR_USER::ReleaseReceivedData(Kernel::HLERequestContext& ctx) {
 
     IPC::RequestBuilder rb = rp.MakeBuilder(1, 0);
 
-    if (receive_buffer->Release(count)) {
+    if (receive_buffer && receive_buffer->Release(count)) {
+        FlushPendingReceive();
         rb.Push(ResultSuccess);
     } else {
         LOG_ERROR(Service_IR, "failed to release {} packets", count);
@@ -427,35 +744,36 @@ void IR_USER::ReleaseReceivedData(Kernel::HLERequestContext& ctx) {
     LOG_TRACE(Service_IR, "called, count={}", count);
 }
 
-IR_USER::IR_USER(Core::System& system) : ServiceFramework("ir:USER", 1) {
+IR_USER::IR_USER(Core::System& system)
+    : ServiceFramework("ir:USER", 1), timing(system.CoreTiming()) {
     const FunctionInfo functions[] = {
         // clang-format off
         {0x0001, nullptr, "InitializeIrNop"},
         {0x0002, &IR_USER::FinalizeIrNop, "FinalizeIrNop"},
-        {0x0003, nullptr, "ClearReceiveBuffer"},
-        {0x0004, nullptr, "ClearSendBuffer"},
-        {0x0005, nullptr, "WaitConnection"},
+        {0x0003, &IR_USER::ClearReceiveBuffer, "ClearReceiveBuffer"},
+        {0x0004, &IR_USER::ClearSendBuffer, "ClearSendBuffer"},
+        {0x0005, &IR_USER::WaitConnection, "WaitConnection"},
         {0x0006, &IR_USER::RequireConnection, "RequireConnection"},
-        {0x0007, nullptr, "AutoConnection"},
-        {0x0008, nullptr, "AnyConnection"},
+        {0x0007, &IR_USER::AutoConnection, "AutoConnection"},
+        {0x0008, &IR_USER::AnyConnection, "AnyConnection"},
         {0x0009, &IR_USER::Disconnect, "Disconnect"},
         {0x000A, &IR_USER::GetReceiveEvent, "GetReceiveEvent"},
         {0x000B, &IR_USER::GetSendEvent, "GetSendEvent"},
         {0x000C, &IR_USER::GetConnectionStatusEvent, "GetConnectionStatusEvent"},
         {0x000D, &IR_USER::SendIrNop, "SendIrNop"},
-        {0x000E, nullptr, "SendIrNopLarge"},
+        {0x000E, &IR_USER::SendIrNopLarge, "SendIrNopLarge"},
         {0x000F, nullptr, "ReceiveIrnop"},
         {0x0010, nullptr, "ReceiveIrnopLarge"},
-        {0x0011, nullptr, "GetLatestReceiveErrorResult"},
-        {0x0012, nullptr, "GetLatestSendErrorResult"},
-        {0x0013, nullptr, "GetConnectionStatus"},
-        {0x0014, nullptr, "GetTryingToConnectStatus"},
-        {0x0015, nullptr, "GetReceiveSizeFreeAndUsed"},
-        {0x0016, nullptr, "GetSendSizeFreeAndUsed"},
-        {0x0017, nullptr, "GetConnectionRole"},
+        {0x0011, &IR_USER::GetLatestReceiveErrorResult, "GetLatestReceiveErrorResult"},
+        {0x0012, &IR_USER::GetLatestSendErrorResult, "GetLatestSendErrorResult"},
+        {0x0013, &IR_USER::GetConnectionStatus, "GetConnectionStatus"},
+        {0x0014, &IR_USER::GetTryingToConnectStatus, "GetTryingToConnectStatus"},
+        {0x0015, &IR_USER::GetReceiveSizeFreeAndUsed, "GetReceiveSizeFreeAndUsed"},
+        {0x0016, &IR_USER::GetSendSizeFreeAndUsed, "GetSendSizeFreeAndUsed"},
+        {0x0017, &IR_USER::GetConnectionRole, "GetConnectionRole"},
         {0x0018, &IR_USER::InitializeIrNopShared, "InitializeIrNopShared"},
         {0x0019, &IR_USER::ReleaseReceivedData, "ReleaseReceivedData"},
-        {0x001A, nullptr, "SetOwnMachineId"},
+        {0x001A, &IR_USER::SetOwnMachineId, "SetOwnMachineId"},
         // clang-format on
     };
     RegisterHandlers(functions);
@@ -469,12 +787,24 @@ IR_USER::IR_USER(Core::System& system) : ServiceFramework("ir:USER", 1) {
 
     extra_hid = std::make_unique<ExtraHID>([this](std::span<const u8> data) { PutToReceive(data); },
                                            system.CoreTiming(), system.Movie());
+
+    ir_lan = std::make_unique<IrLanLink>(IrLanLink::Callbacks{
+        .on_connected = [this](u8 role, u8 network_id) { OnLanConnected(role, network_id); },
+        .on_disconnected = [this] { OnLanDisconnected(); },
+        .on_data = [this](std::span<const u8> payload) { OnLanData(payload); },
+    });
+    lan_poll_event = timing.RegisterEvent(
+        "IR_USER::LanPoll", [this](std::uintptr_t, s64 cycles_late) { LanPoll(cycles_late); });
 }
 
 IR_USER::~IR_USER() {
     if (connected_device) {
         extra_hid->OnDisconnect();
     }
+    if (lan_polling) {
+        timing.UnscheduleEvent(lan_poll_event, 0);
+    }
+    StopLanConnection(true);
 }
 
 void IR_USER::ReloadInputDevices() {

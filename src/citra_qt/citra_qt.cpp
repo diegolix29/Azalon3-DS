@@ -5264,17 +5264,6 @@ void GMainWindow::InitializeDebugWidgets() {
             &IPCRecorderWidget::OnEmulationStarting);
 }
 
-class MyProxyStyle : public QProxyStyle {
-public:
-    int styleHint(StyleHint hint, const QStyleOption* option = nullptr,
-                  const QWidget* widget = nullptr,
-                  QStyleHintReturn* returnData = nullptr) const override {
-        if (hint == QStyle::SH_Menu_Scrollable)
-            return 1;
-        return QProxyStyle::styleHint(hint, option, widget, returnData);
-    }
-};
-
 void GMainWindow::UpdateAmiibos() {
     std::string pId = Loader::getProgramId();
     int n = 0;
@@ -5346,10 +5335,8 @@ void GMainWindow::InitializeAmiibos() {
         amiibos_file_actions[pair.first] = amiiboAction2;
     }
 
-    ui->menu_Amiibo_Full_List->setStyle(new MyProxyStyle);
-    ui->menu_Amiibo_Recommended->setStyle(new MyProxyStyle);
-    ui->menu_Amiibo_File_Full_List->setStyle(new MyProxyStyle);
-    ui->menu_Amiibo_File_Recommended->setStyle(new MyProxyStyle);
+    // These long menus scroll thanks to the application-wide style (AzalonUI::AppStyle).
+    // Don't give them a style of their own: see the comment there.
 }
 
 void GMainWindow::InitializeRecentFileMenuActions() {
@@ -10005,6 +9992,7 @@ int LaunchQtFrontend(int argc, char* argv[]) {
     Q_INIT_RESOURCE(theme_default);
     Q_INIT_RESOURCE(theme_qdarkstyle);
     Q_INIT_RESOURCE(theme_qdarkstyle_midnight_blue);
+    Q_INIT_RESOURCE(theme_azalon);
 #ifdef ENABLE_QT_TRANSLATION
     Q_INIT_RESOURCE(languages);
 #endif

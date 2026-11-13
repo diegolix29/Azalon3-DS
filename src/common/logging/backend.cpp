@@ -162,6 +162,14 @@ public:
         // _SH_DENYWR allows read only access to the file for other programs.
         // It is #defined to 0 on other platforms
         file = std::make_unique<FileUtil::IOFile>(filename, "w", _SH_DENYWR);
+
+        // Another instance holds the log open (e.g. two windows for local multiplayer): log to
+        // azahar_log.2.txt, .3.txt, ... instead of writing nothing.
+        for (int i = 2; !file->IsOpen() && i <= 9; ++i) {
+            auto alt_filename = filename;
+            boost::replace_all(alt_filename, ".txt", fmt::format(".{}.txt", i));
+            file = std::make_unique<FileUtil::IOFile>(alt_filename, "w", _SH_DENYWR);
+        }
     }
 
     ~FileBackend() override = default;
